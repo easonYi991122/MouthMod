@@ -5,6 +5,7 @@
 
 ```text
 MouthMod/
+  firmware/ImuLookMini/         单文件精简版（一个 .ino，不含测试；遥测格式与测试页兼容）
   firmware/ImuBench/            Arduino sketch（文件夹名 = .ino 名）
     ImuBench.ino                只转发 setup()/loop()
     src/Config.h                引脚、默认参数（标明哪些是规格冻结值、哪些是暂定值）
