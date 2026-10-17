@@ -1,0 +1,4 @@
+build/
+captures/
+*.csv
+.DS_Store

@@ -1,0 +1,4 @@
+# macOS fix for Seeed nRF52 Boards 1.1.13: platform.txt calls "python", which
+# macOS does not provide. Copy this file next to that platform.txt
+# (~/Library/Arduino15/packages/Seeeduino/hardware/nrf52/1.1.13/).
+recipe.objcopy.uf2.pattern=/usr/bin/python3 "{runtime.platform.path}/tools/uf2conv/uf2_wrap.py" "{runtime.platform.path}/tools/uf2conv/uf2conv.py" "{build.board}" "{build.path}" "{build.source.path}" "{build.project_name}"

@@ -1,0 +1,766 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MouthMod Look Bench</title>
+<style>
+:root {
+  --bg: #0f1216; --panel: #171b21; --panel2: #1e232b; --line: #2b313b;
+  --text: #e6e9ee; --muted: #8b94a3; --accent: #5aa9ff; --ok: #3ecf8e;
+  --warn: #f5b942; --bad: #ff5c5c; --roll: #ff9f43; --pitch: #4fc3f7;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+  font: 13px/1.4 -apple-system, "Segoe UI", "PingFang SC", sans-serif; }
+header { display: flex; align-items: center; gap: 10px; padding: 8px 14px;
+  border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+header h1 { font-size: 15px; margin: 0 8px 0 0; font-weight: 600; }
+button, select, input[type=number] { background: var(--panel2); color: var(--text);
+  border: 1px solid var(--line); border-radius: 6px; padding: 5px 10px; font: inherit; }
+button { cursor: pointer; }
+button:hover:not(:disabled) { border-color: var(--accent); }
+button:disabled { opacity: .45; cursor: default; }
+button.primary { background: #1f4f86; border-color: #2e6fb8; }
+button.danger { background: #6b1f24; border-color: #a83a40; }
+.badge { padding: 3px 10px; border-radius: 999px; font-weight: 600; font-size: 12px;
+  background: var(--panel2); border: 1px solid var(--line); }
+.badge.DISARMED { color: var(--muted); }
+.badge.CALIBRATING, .badge.WAIT_NEUTRAL { color: var(--warn); border-color: var(--warn); }
+.badge.ACTIVE { color: var(--ok); border-color: var(--ok); }
+.badge.FAULT { color: #fff; background: var(--bad); border-color: var(--bad); }
+.muted { color: var(--muted); }
+main { display: grid; grid-template-columns: 300px 1fr; gap: 10px; padding: 10px; }
+@media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+aside { display: flex; flex-direction: column; gap: 10px; }
+section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px; }
+section h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--muted); margin: 0 0 8px; font-weight: 600; }
+.row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-bottom: 6px; }
+.slider { display: grid; grid-template-columns: 74px 1fr 52px; gap: 6px; align-items: center; margin: 4px 0; }
+.slider label { color: var(--muted); }
+.slider output { text-align: right; font-variant-numeric: tabular-nums; }
+input[type=range] { width: 100%; accent-color: var(--accent); }
+.view { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+#sceneWrap { position: relative; background: #000; border-radius: 8px; overflow: hidden;
+  aspect-ratio: 16 / 8; min-height: 260px; border: 1px solid var(--line); }
+#scene { width: 100%; height: 100%; display: block; }
+#crosshair { position: absolute; left: 50%; top: 50%; width: 22px; height: 22px;
+  margin: -11px 0 0 -11px; pointer-events: none; }
+#crosshair::before, #crosshair::after { content: ""; position: absolute; background: #fff; mix-blend-mode: difference; }
+#crosshair::before { left: 10px; top: 0; width: 2px; height: 22px; }
+#crosshair::after { top: 10px; left: 0; height: 2px; width: 22px; }
+.hud { position: absolute; left: 10px; top: 8px; font: 12px ui-monospace, Menlo, monospace;
+  text-shadow: 0 1px 2px #000; pointer-events: none; white-space: pre; }
+.hud.right { left: auto; right: 10px; text-align: right; }
+#lockHint { position: absolute; inset: auto 0 10px 0; text-align: center; color: #fff;
+  text-shadow: 0 1px 3px #000; pointer-events: none; font-size: 12px; }
+.charts { display: grid; grid-template-columns: 300px 1fr; gap: 10px; }
+@media (max-width: 900px) { .charts { grid-template-columns: 1fr; } }
+canvas.chart { width: 100%; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; display: block; }
+#tilt { aspect-ratio: 1; touch-action: none; }
+#series { height: 300px; }
+.stats { display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; font-variant-numeric: tabular-nums; }
+.stats span:nth-child(odd) { color: var(--muted); }
+#log { height: 140px; overflow: auto; font: 11px ui-monospace, Menlo, monospace;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; white-space: pre-wrap; }
+#log .err { color: var(--bad); } #log .ev { color: var(--warn); } #log .ok { color: var(--ok); }
+textarea { width: 100%; height: 120px; background: var(--panel2); color: var(--text);
+  border: 1px solid var(--line); border-radius: 6px; font: 11px ui-monospace, Menlo, monospace; }
+.legend { display: flex; gap: 12px; font-size: 11px; color: var(--muted); }
+.legend i { display: inline-block; width: 10px; height: 3px; margin-right: 4px; vertical-align: middle; }
+.warnbox { background: #3a2a10; border: 1px solid #6b4e1c; color: #ffd58a; padding: 6px 8px; border-radius: 6px; font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>MouthMod Look Bench</h1>
+  <button id="btnBridge" class="primary" style="display:none">连接板子（本地桥）</button>
+  <button id="btnConnect">连接板子 (Web Serial)</button>
+  <button id="btnSim">模拟模式（无硬件）</button>
+  <span id="badge" class="badge DISARMED">未连接</span>
+  <span id="statusText" class="muted"></span>
+  <span style="flex:1"></span>
+  <button id="btnDisarmTop" class="danger" title="快捷键: Esc 或 X">停用 (Esc / X)</button>
+</header>
+
+<main>
+<aside>
+  <section>
+    <h2>会话</h2>
+    <div class="row">
+      <button id="btnArm">启用 (校准 3 s)</button>
+      <button id="btnAck">确认故障</button>
+    </div>
+    <div class="row">
+      <label><input type="checkbox" id="chkHid"> 真实 USB 鼠标输出</label>
+    </div>
+    <div class="muted" id="hidHint">关闭时：固件只计算鼠标增量并通过串口发给本页，不会动你的光标（安全）。开启前先点击 3D 画面锁定指针；退出锁定会自动关闭并停用。</div>
+    <div class="row" style="margin-top:6px">
+      <label class="muted">视角输入源</label>
+      <select id="selSource">
+        <option value="auto">自动</option>
+        <option value="telemetry">固件串口增量</option>
+        <option value="pointer">真实鼠标 (Pointer Lock)</option>
+      </select>
+    </div>
+  </section>
+
+  <section>
+    <h2>安装方向 (mount)</h2>
+    <div class="row">
+      <label class="muted">朝上</label><select id="selUp"></select>
+      <label class="muted">朝前</label><select id="selFwd"></select>
+      <button id="btnMount">应用</button>
+    </div>
+    <div class="muted">中立坐姿时，板子哪根轴指向头顶 / 鼻尖。应用后需重新启用校准。</div>
+  </section>
+
+  <section>
+    <h2>视角参数（实时下发）</h2>
+    <div id="sliders"></div>
+    <div class="row">
+      <label class="muted">迟滞公式</label>
+      <select id="selHmode"><option value="0">内收: 进 3° / 出 1°</option><option value="1">外扩: 进 5° / 出 3°</option></select>
+    </div>
+    <div class="row">
+      <label class="muted">速度曲线</label>
+      <select id="selVmode"><option value="0">规格原式 v=k·e</option><option value="1">斜坡 v=k·(|e|−出界)</option></select>
+    </div>
+    <div class="row">
+      <label><input type="checkbox" id="chkInvx"> 反转左右</label>
+      <label><input type="checkbox" id="chkInvy"> 反转上下</label>
+    </div>
+    <div class="row">
+      <button id="btnPush">重新下发全部</button>
+      <button id="btnDefaults">恢复默认</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>游戏灵敏度模拟</h2>
+    <div class="slider"><label>MC 灵敏度%</label><input type="range" id="mcSens" min="0" max="200" step="1" value="100"><output id="mcSensOut"></output></div>
+    <div class="row"><label class="muted">每计数角度</label><input type="number" id="degPerCount" step="0.001" style="width:90px"><span class="muted">°/count</span></div>
+    <div class="muted">按 Minecraft Java 公式 ((s·0.6+0.2)³·1.2) 换算；Education/Bedrock 公式不同，最终需在游戏内复核。</div>
+  </section>
+
+  <section>
+    <h2>瞄准测试</h2>
+    <div class="row"><button id="btnAim">开始 10 次</button><button id="btnAimStop">停止</button></div>
+    <div class="stats" id="aimStats"></div>
+  </section>
+
+  <section>
+    <h2>记录 / 导出</h2>
+    <div class="row"><button id="btnRec">开始记录 CSV</button><span id="recInfo" class="muted"></span></div>
+    <div class="row"><button id="btnExport">生成 Config.h 片段</button></div>
+    <textarea id="exportBox" readonly placeholder="调好参数后点上面按钮，把结果贴进 firmware/ImuBench/src/Config.h"></textarea>
+  </section>
+</aside>
+
+<div class="view">
+  <div id="sceneWrap">
+    <canvas id="scene"></canvas>
+    <div id="crosshair"></div>
+    <div class="hud" id="hudL"></div>
+    <div class="hud right" id="hudR"></div>
+    <div id="lockHint">点击画面锁定鼠标（Esc 退出并停用）</div>
+  </div>
+  <div class="charts">
+    <div>
+      <canvas id="tilt" class="chart"></canvas>
+      <div class="legend" style="margin-top:4px"><span>横轴 roll 误差 · 纵轴 pitch 误差（°）</span></div>
+    </div>
+    <div>
+      <canvas id="series" class="chart"></canvas>
+      <div class="legend" style="margin-top:4px">
+        <span><i style="background:var(--roll)"></i>roll 误差</span>
+        <span><i style="background:var(--pitch)"></i>pitch 误差</span>
+        <span>下图：vx / vy (counts/s)</span>
+      </div>
+    </div>
+  </div>
+  <div class="charts">
+    <section><h2>链路状态</h2><div class="stats" id="stats"></div></section>
+    <div id="log"></div>
+  </div>
+</div>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+'use strict';
+// ---------------------------------------------------------------- params
+const DEFAULTS = { kx: 40, ky: 30, dead: 3, hyst: 2, sat: 20, alpha: 0.98,
+  hmode: 0, vmode: 0, invx: 0, invy: 0, rate: 50 };
+const SLIDERS = [
+  ['kx', '左右增益 kx', 0, 150, 1, 'counts/s/°'],
+  ['ky', '上下增益 ky', 0, 150, 1, ''],
+  ['dead', '死区 °', 0, 8, 0.5, ''],
+  ['hyst', '迟滞 °', 0, 5, 0.5, ''],
+  ['sat', '饱和 °', 5, 40, 1, ''],
+  ['alpha', '互补 α', 0.9, 0.995, 0.005, ''],
+  ['rate', '遥测 Hz', 10, 100, 10, ''],
+];
+let P = loadParams();
+function loadParams() {
+  try { return Object.assign({}, DEFAULTS, JSON.parse(localStorage.getItem('mm.params') || '{}')); }
+  catch (e) { return Object.assign({}, DEFAULTS); }
+}
+function saveParams() { try { localStorage.setItem('mm.params', JSON.stringify(P)); } catch (e) {} }
+
+// ---------------------------------------------------------------- dom
+const $ = (id) => document.getElementById(id);
+const AXES = ['+X', '-X', '+Y', '-Y', '+Z', '-Z'];
+for (const sel of [$('selUp'), $('selFwd')]) for (const a of AXES) sel.add(new Option(a, a));
+$('selUp').value = localStorage.getItem('mm.up') || '+Z';
+$('selFwd').value = localStorage.getItem('mm.fwd') || '+X';
+
+const sliderEls = {};
+for (const [key, label, min, max, step] of SLIDERS) {
+  const div = document.createElement('div');
+  div.className = 'slider';
+  div.innerHTML = `<label>${label}</label><input type="range" min="${min}" max="${max}" step="${step}"><output></output>`;
+  const input = div.querySelector('input'), out = div.querySelector('output');
+  input.value = P[key]; out.textContent = P[key];
+  input.addEventListener('input', () => { out.textContent = input.value; });
+  input.addEventListener('change', () => setParam(key, Number(input.value)));
+  sliderEls[key] = { input, out };
+  $('sliders').appendChild(div);
+}
+function syncControls() {
+  for (const k in sliderEls) { sliderEls[k].input.value = P[k]; sliderEls[k].out.textContent = P[k]; }
+  $('selHmode').value = String(P.hmode); $('selVmode').value = String(P.vmode);
+  $('chkInvx').checked = !!P.invx; $('chkInvy').checked = !!P.invy;
+}
+syncControls();
+$('selHmode').onchange = () => setParam('hmode', Number($('selHmode').value));
+$('selVmode').onchange = () => setParam('vmode', Number($('selVmode').value));
+$('chkInvx').onchange = () => setParam('invx', $('chkInvx').checked ? 1 : 0);
+$('chkInvy').onchange = () => setParam('invy', $('chkInvy').checked ? 1 : 0);
+
+function setParam(key, value) {
+  P[key] = value; saveParams(); syncControls();
+  send(`set ${key} ${value}`);
+}
+function pushAll() { for (const k of Object.keys(DEFAULTS)) send(`set ${k} ${P[k]}`); }
+$('btnPush').onclick = pushAll;
+$('btnDefaults').onclick = () => { P = Object.assign({}, DEFAULTS); saveParams(); syncControls(); pushAll(); };
+$('btnMount').onclick = () => {
+  localStorage.setItem('mm.up', $('selUp').value); localStorage.setItem('mm.fwd', $('selFwd').value);
+  send(`mount ${$('selUp').value} ${$('selFwd').value}`);
+};
+
+// ---------------------------------------------------------------- log
+function log(text, cls) {
+  const el = $('log'); const line = document.createElement('div');
+  if (cls) line.className = cls;
+  line.textContent = `${new Date().toLocaleTimeString()}  ${text}`;
+  el.appendChild(line);
+  while (el.childNodes.length > 300) el.removeChild(el.firstChild);
+  el.scrollTop = el.scrollHeight;
+}
+
+// ---------------------------------------------------------------- transport
+let link = null;   // { kind: 'serial'|'sim', write(line) }
+function send(line) { if (link) link.write(line); }
+
+async function connectSerial() {
+  if (!('serial' in navigator)) {
+    log('此浏览器不支持 Web Serial。请用桌面版 Chrome 或 Edge，并通过 http://localhost 打开本页。', 'err');
+    return;
+  }
+  try {
+    const port = await navigator.serial.requestPort();
+    await port.open({ baudRate: 115200 });
+    try { await port.setSignals({ dataTerminalReady: true, requestToSend: true }); } catch (e) {}
+    const encoder = new TextEncoder();
+    const writer = port.writable.getWriter();
+    stopSim();
+    link = { kind: 'serial', port, writer,
+      write(line) { writer.write(encoder.encode(line + '\n')).catch(() => {}); log('> ' + line); } };
+    $('btnConnect').textContent = '断开';
+    log('串口已打开', 'ok');
+    readLoop(port);
+    setTimeout(() => { send(`mount ${$('selUp').value} ${$('selFwd').value}`); pushAll(); send('get'); }, 300);
+  } catch (e) {
+    let hint = '';
+    if (/No port selected/i.test(e.message)) hint = '（没有选中端口。若在 app 内置浏览器里，它不会弹出选择框：请改用桌面版 Chrome，或用 bridge.py 启动本页后点「连接板子（本地桥）」）';
+    else if (/Failed to open/i.test(e.message)) hint = '（端口被占用：关闭 Arduino IDE 的串口监视器/绘图器，或其他已连接的页面、bridge.py）';
+    log('连接失败: ' + e.message + hint, 'err');
+  }
+}
+async function readLoop(port) {
+  const decoder = new TextDecoder();
+  let buf = '';
+  while (port.readable && link && link.port === port) {
+    const reader = port.readable.getReader();
+    link.reader = reader;
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        let i;
+        while ((i = buf.indexOf('\n')) >= 0) { handleLine(buf.slice(0, i).trim()); buf = buf.slice(i + 1); }
+      }
+    } catch (e) { log('读取中断: ' + e.message, 'err'); break; }
+    finally { reader.releaseLock(); }
+  }
+}
+async function disconnectSerial() {
+  if (!link || link.kind !== 'serial') return;
+  const l = link; link = null;
+  try { await l.writer.write(new TextEncoder().encode('disarm\n')); } catch (e) {}
+  try { l.writer.releaseLock(); } catch (e) {}
+  try { if (l.reader) await l.reader.cancel(); } catch (e) {}
+  try { await l.port.close(); } catch (e) {}
+  $('btnConnect').textContent = '连接板子 (Web Serial)';
+  setBadge(null); log('串口已关闭（固件因 DTR 断开自动停用）', 'ok');
+}
+$('btnConnect').onclick = () => (link && link.kind === 'serial') ? disconnectSerial() : connectSerial();
+
+// ---------------------------------------------------------------- local bridge (bridge.py)
+let bridgeES = null;
+function connectBridge() {
+  if (link) { if (link.kind === 'bridge') return disconnectBridge(); if (link.kind === 'sim') stopSim(); else return; }
+  bridgeES = new EventSource('/events');
+  link = { kind: 'bridge', write(line) { fetch('/cmd', { method: 'POST', body: line }).catch(() => {}); log('> ' + line); } };
+  let primed = false;
+  bridgeES.onmessage = (e) => {
+    const line = e.data;
+    if (line.startsWith('#BRIDGE')) {
+      const [, what, port, err] = line.split(',');
+      if (what === 'connected') {
+        log(`本地桥已连接 ${port}`, 'ok');
+        if (!primed) { primed = true; setTimeout(() => { send(`mount ${$('selUp').value} ${$('selFwd').value}`); pushAll(); send('get'); }, 300); }
+      } else if (what === 'disconnected') { log(`板子断开 ${port}（拔线或复位），桥会自动重连`, 'err'); primed = false; setBadge(null); }
+      else if (what === 'waiting') log('本地桥在等待板子插入…', 'ev');
+      else if (what === 'error') log(`本地桥打不开 ${port}: ${err}（端口可能被 Arduino 串口监视器或 Chrome 占用）`, 'err');
+      return;
+    }
+    handleLine(line);
+  };
+  bridgeES.onerror = () => { if (link && link.kind === 'bridge') log('与本地桥的连接中断（bridge.py 是否还在运行？）', 'err'); };
+  $('btnBridge').textContent = '断开（本地桥）';
+}
+function disconnectBridge() {
+  send('hid 0'); send('disarm');
+  if (bridgeES) bridgeES.close();
+  bridgeES = null; link = null; setBadge(null);
+  $('btnBridge').textContent = '连接板子（本地桥）';
+}
+$('btnBridge').onclick = connectBridge;
+fetch('/bridge-info').then(r => r.ok ? r.json() : null).then(info => {
+  if (!info || !info.bridge) return;
+  $('btnBridge').style.display = '';
+  $('btnConnect').classList.remove('primary');
+  log('检测到 bridge.py，自动通过本地桥连接', 'ok');
+  connectBridge();
+}).catch(() => {});
+if ('serial' in navigator) navigator.serial.addEventListener('disconnect', () => {
+  if (link && link.kind === 'serial') { link = null; $('btnConnect').textContent = '连接板子 (Web Serial)'; setBadge(null); log('设备已拔出', 'err'); }
+});
+
+// ---------------------------------------------------------------- telemetry
+const HIST = 600;
+const hist = [];
+let T = null;           // latest telemetry frame
+let fw = {};            // #I fields
+let lastCal = '';
+let rateCount = 0, rateHz = 0, imuNewCount = 0, imuHz = 0;
+let sentCountsWindow = { x: 0, y: 0 }, ptrCountsWindow = { x: 0, y: 0 };
+let deliveryText = '—';
+let rec = null;
+
+function parseKV(parts) { const o = {}; for (const p of parts) { const i = p.indexOf('='); if (i > 0) o[p.slice(0, i)] = p.slice(i + 1); } return o; }
+
+function handleLine(line) {
+  if (!line) return;
+  if (rec) rec.push(line);
+  if (line.startsWith('D,')) return handleData(line.split(','));
+  const parts = line.split(',');
+  switch (parts[0]) {
+    case '#I': fw = parseKV(parts.slice(1)); log(line); break;
+    case '#P': {
+      const kv = parseKV(parts.slice(1));
+      if (kv.mount) { const m = kv.mount.match(/^([+-][XYZ])([+-][XYZ])$/); if (m) { $('selUp').value = m[1]; $('selFwd').value = m[2]; } }
+      $('chkHid').checked = kv.hid === '1';
+      break;
+    }
+    case '#C': lastCal = parts.slice(1).join('  '); log('校准: ' + lastCal, 'ev'); break;
+    case '#E': log('事件: ' + parts.slice(2).join(' → '), 'ev'); break;
+    case '#ERR': log(line, 'err'); break;
+    case '#OK': log(line, 'ok'); break;
+    case '#H': break;
+    default: log(line);
+  }
+}
+function handleData(f) {
+  if (f.length < 24) return;
+  const d = { t: +f[1], loopDt: +f[2], state: f[3], imuNew: f[4] === '1', imuAge: +f[5],
+    a: [+f[6], +f[7], +f[8]], g: [+f[9], +f[10], +f[11]], roll: +f[12], pitch: +f[13],
+    re: +f[14], pe: +f[15], vx: +f[16], vy: +f[17], dx: +f[18], dy: +f[19],
+    hid: f[20] === '1', engX: f[21][0] === '1', engY: f[21][1] === '1', dropped: +f[22], event: f[23] || '' };
+  T = d; rateCount++; if (d.imuNew) imuNewCount++;
+  hist.push(d); if (hist.length > HIST) hist.shift();
+  setBadge(d.state);
+  sentCountsWindow.x += d.dx; sentCountsWindow.y += d.dy;
+  if (!d.hid && sourceIsTelemetry()) applyLook(d.dx, d.dy);
+  if (d.state !== 'ACTIVE') aimPause();
+}
+setInterval(() => {
+  rateHz = rateCount; rateCount = 0; imuHz = imuNewCount; imuNewCount = 0;
+  if (T && T.hid) {
+    const s = Math.abs(sentCountsWindow.x) + Math.abs(sentCountsWindow.y);
+    const r = Math.abs(ptrCountsWindow.x) + Math.abs(ptrCountsWindow.y);
+    deliveryText = s > 20 ? `${(100 * r / s).toFixed(0)} %  (收 ${r} / 发 ${s})` : '运动太少';
+  } else deliveryText = '—';
+  sentCountsWindow = { x: 0, y: 0 }; ptrCountsWindow = { x: 0, y: 0 };
+}, 1000);
+
+function setBadge(state) {
+  const b = $('badge');
+  b.className = 'badge ' + (state || 'DISARMED');
+  b.textContent = state ? ({ DISARMED: '停用 DISARMED', CALIBRATING: '校准中 · 保持静止', WAIT_NEUTRAL: '回中等待 300 ms', ACTIVE: '启用 ACTIVE', FAULT: '故障 FAULT' }[state] || state) : '未连接';
+}
+
+// ---------------------------------------------------------------- session buttons
+$('btnArm').onclick = () => send('arm');
+$('btnAck').onclick = () => send('ack');
+function disarmAll() { send('hid 0'); send('disarm'); $('chkHid').checked = false; }
+$('btnDisarmTop').onclick = disarmAll;
+document.addEventListener('keydown', (e) => {
+  const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName) && e.target.type !== 'checkbox' && e.target.type !== 'range';
+  if (e.key === 'Escape' || (!typing && (e.key === 'x' || e.key === 'X'))) disarmAll();
+});
+window.addEventListener('beforeunload', () => {
+  if (!link) return;
+  if (link.kind === 'bridge') { navigator.sendBeacon('/cmd', 'hid 0'); navigator.sendBeacon('/cmd', 'disarm'); }
+  else { link.write('hid 0'); link.write('disarm'); }
+});
+
+$('chkHid').onchange = () => {
+  if ($('chkHid').checked && document.pointerLockElement !== $('scene')) {
+    $('chkHid').checked = false;
+    log('请先点击 3D 画面锁定指针，再开启真实鼠标输出。', 'err');
+    return;
+  }
+  send(`hid ${$('chkHid').checked ? 1 : 0}`);
+};
+
+// ---------------------------------------------------------------- pointer lock
+let rawMovement = false;
+$('scene').addEventListener('click', async () => {
+  if (document.pointerLockElement === $('scene')) return;
+  try { await $('scene').requestPointerLock({ unadjustedMovement: true }); rawMovement = true; }
+  catch (e) { try { await $('scene').requestPointerLock(); rawMovement = false; } catch (e2) { log('无法锁定指针: ' + e2.message, 'err'); } }
+});
+document.addEventListener('pointerlockchange', () => {
+  const locked = document.pointerLockElement === $('scene');
+  $('lockHint').style.display = locked ? 'none' : '';
+  if (!locked && $('chkHid').checked) { disarmAll(); log('指针锁定已退出 → 关闭 HID 并停用', 'ev'); }
+});
+document.addEventListener('mousemove', (e) => {
+  if (document.pointerLockElement !== $('scene')) return;
+  ptrCountsWindow.x += e.movementX; ptrCountsWindow.y += e.movementY;
+  if (!sourceIsTelemetry()) applyLook(e.movementX, e.movementY);
+});
+function sourceIsTelemetry() {
+  const s = $('selSource').value;
+  if (s === 'telemetry') return true;
+  if (s === 'pointer') return false;
+  return !(T && T.hid);
+}
+
+// ---------------------------------------------------------------- Minecraft sensitivity
+function mcDegPerCount(pct) { const s = pct / 200; const f = s * 0.6 + 0.2; return f * f * f * 1.2; }
+function updateSens(fromSlider) {
+  const pct = Number($('mcSens').value);
+  $('mcSensOut').textContent = pct + '%';
+  if (fromSlider) $('degPerCount').value = mcDegPerCount(pct).toFixed(4);
+  try { localStorage.setItem('mm.sens', $('mcSens').value); } catch (e) {}
+}
+$('mcSens').value = localStorage.getItem('mm.sens') || 100;
+$('mcSens').oninput = () => updateSens(true);
+updateSens(true);
+const degPerCount = () => Number($('degPerCount').value) || 0.15;
+
+// ---------------------------------------------------------------- 3D scene
+let yaw = 0, pitch = 0;  // degrees; yaw + = turned right, pitch + = looking up
+function applyLook(dx, dy) {
+  yaw += dx * degPerCount();
+  pitch = Math.max(-90, Math.min(90, pitch - dy * degPerCount()));
+}
+const canvas = $('scene');
+let renderer, scene, camera, targets = [], raycaster;
+function initScene() {
+  if (!window.THREE) { log('three.js 未加载（需要联网访问 cdnjs）；3D 视图不可用，其余功能正常。', 'err'); return; }
+  renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x87b8ff);
+  scene.fog = new THREE.Fog(0x87b8ff, 30, 90);
+  camera = new THREE.PerspectiveCamera(70, 2, 0.1, 200);
+  camera.position.set(0, 1.62, 0);
+  camera.rotation.order = 'YXZ';
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x445533, 0.9));
+  const sun = new THREE.DirectionalLight(0xffffff, 0.6); sun.position.set(20, 40, 10); scene.add(sun);
+
+  // Voxel terrain (deterministic pseudo-random).
+  let seed = 7; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  const box = new THREE.BoxGeometry(1, 1, 1);
+  const R = 40, cells = [];
+  for (let x = -R; x <= R; x++) for (let z = -R; z <= R; z++) {
+    const d = Math.hypot(x, z);
+    const h = d < 6 ? 0 : Math.floor(Math.max(0, Math.sin(x * 0.21) * 1.6 + Math.cos(z * 0.17) * 1.6 + rnd() * 1.2 + (d > 30 ? (d - 30) * 0.5 : 0)));
+    for (let y = 0; y <= h; y++) cells.push([x, y - 1, z, y === h]);
+  }
+  const grass = new THREE.InstancedMesh(box, new THREE.MeshLambertMaterial({ color: 0x6bab3e }), cells.filter(c => c[3]).length);
+  const dirt = new THREE.InstancedMesh(box, new THREE.MeshLambertMaterial({ color: 0x8a6240 }), cells.filter(c => !c[3]).length);
+  const m = new THREE.Matrix4(); let gi = 0, di = 0;
+  for (const [x, y, z, top] of cells) { m.makeTranslation(x, y - 0.5, z); if (top) grass.setMatrixAt(gi++, m); else dirt.setMatrixAt(di++, m); }
+  scene.add(grass, dirt);
+  const edges = new THREE.GridHelper(81, 81, 0x000000, 0x000000); edges.position.y = 0.001; edges.material.opacity = 0.12; edges.material.transparent = true; scene.add(edges);
+
+  // Trees as landmarks.
+  const trunkM = new THREE.MeshLambertMaterial({ color: 0x6b4a2b }), leafM = new THREE.MeshLambertMaterial({ color: 0x2f7d32 });
+  for (let i = 0; i < 26; i++) {
+    const a = rnd() * Math.PI * 2, r = 9 + rnd() * 22, x = Math.round(Math.cos(a) * r), z = Math.round(Math.sin(a) * r);
+    for (let y = 0; y < 4; y++) { const t = new THREE.Mesh(box, trunkM); t.position.set(x, y + 0.5, z); scene.add(t); }
+    const l = new THREE.Mesh(new THREE.BoxGeometry(3, 2, 3), leafM); l.position.set(x, 5, z); scene.add(l);
+  }
+  // Compass pillars: N red, E yellow, S blue, W white.
+  [[0, -14, 0xe53935], [14, 0, 0xfdd835], [0, 14, 0x1e88e5], [-14, 0, 0xffffff]].forEach(([x, z, c]) => {
+    const p = new THREE.Mesh(new THREE.BoxGeometry(1, 8, 1), new THREE.MeshLambertMaterial({ color: c })); p.position.set(x, 4, z); scene.add(p);
+  });
+  raycaster = new THREE.Raycaster();
+  resize(); requestAnimationFrame(frame);
+}
+function resize() {
+  if (!renderer) return;
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+  renderer.setSize(w, h, false); camera.aspect = w / h; camera.updateProjectionMatrix();
+}
+window.addEventListener('resize', resize);
+
+function frame() {
+  camera.rotation.y = -yaw * Math.PI / 180;
+  camera.rotation.x = pitch * Math.PI / 180;
+  aimUpdate();
+  renderer.render(scene, camera);
+  requestAnimationFrame(frame);
+}
+
+// ---------------------------------------------------------------- aim test
+let aim = null;
+const targetMat = new (window.THREE ? THREE.MeshLambertMaterial : Object)({ color: 0xff3df2, emissive: 0x551050 });
+function aimStart() {
+  if (!scene) return;
+  aim = { n: 0, total: 10, times: [], target: null, t0: 0, dwell: 0, paused: false };
+  aimNext();
+}
+function aimNext() {
+  if (aim.target) scene.remove(aim.target);
+  if (aim.n >= aim.total) { aimShow(); aim = null; return; }
+  const yawT = (Math.random() * 2 - 1) * 120, pitT = -10 + Math.random() * 35, dist = 12;
+  const yr = yawT * Math.PI / 180, pr = pitT * Math.PI / 180;
+  const t = new THREE.Mesh(new THREE.BoxGeometry(1.4, 1.4, 1.4), targetMat);
+  t.position.set(Math.sin(yr) * Math.cos(pr) * dist, 1.62 + Math.sin(pr) * dist, -Math.cos(yr) * Math.cos(pr) * dist);
+  scene.add(t); aim.target = t; aim.t0 = performance.now(); aim.dwell = 0; aim.n++;
+}
+function aimUpdate() {
+  if (!aim || !aim.target) return;
+  raycaster.setFromCamera({ x: 0, y: 0 }, camera);
+  const hit = raycaster.intersectObject(aim.target).length > 0;
+  aim.target.material.emissive.setHex(hit ? 0xffffff : 0x551050);
+  const now = performance.now();
+  if (hit) { if (!aim.dwell) aim.dwell = now; else if (now - aim.dwell > 400) { aim.times.push((aim.dwell - aim.t0) / 1000); aimShow(); aimNext(); } }
+  else aim.dwell = 0;
+}
+function aimPause() { /* targets wait; timing continues so disarm costs show up */ }
+function aimShow() {
+  const t = aim ? aim.times : [];
+  if (!t.length) { $('aimStats').innerHTML = ''; return; }
+  const s = [...t].sort((a, b) => a - b), med = s[Math.floor(s.length / 2)], mean = t.reduce((a, b) => a + b, 0) / t.length;
+  $('aimStats').innerHTML = `<span>完成</span><span>${t.length}/10</span><span>中位</span><span>${med.toFixed(2)} s</span><span>平均</span><span>${mean.toFixed(2)} s</span><span>最慢</span><span>${s[s.length - 1].toFixed(2)} s</span>`;
+}
+$('btnAim').onclick = aimStart;
+$('btnAimStop').onclick = () => { if (aim && aim.target) scene.remove(aim.target); aim = null; };
+
+// ---------------------------------------------------------------- charts
+function setupCanvas(c) {
+  const dpr = window.devicePixelRatio || 1, w = c.clientWidth, h = c.clientHeight;
+  if (c.width !== Math.round(w * dpr) || c.height !== Math.round(h * dpr)) { c.width = Math.round(w * dpr); c.height = Math.round(h * dpr); }
+  const ctx = c.getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0); return [ctx, w, h];
+}
+function engageEdge() { return P.hmode === 1 ? P.dead + P.hyst : P.dead; }
+function releaseEdge() { return Math.max(0, P.hmode === 1 ? P.dead : P.dead - P.hyst); }
+const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+
+function drawTilt() {
+  const [ctx, w, h] = setupCanvas($('tilt'));
+  ctx.clearRect(0, 0, w, h);
+  const range = Math.max(30, P.sat + 5), s = (w / 2 - 10) / range, cx = w / 2, cy = h / 2;
+  const X = (d) => cx + d * s, Y = (d) => cy + d * s;  // pitch + (nose down) drawn downward
+  ctx.fillStyle = 'rgba(90,169,255,0.08)';
+  const e = engageEdge(), r = releaseEdge();
+  ctx.fillRect(X(-e), 0, 2 * e * s, h); ctx.fillRect(0, Y(-e), w, 2 * e * s);
+  ctx.fillStyle = 'rgba(62,207,142,0.18)'; ctx.fillRect(X(-e), Y(-e), 2 * e * s, 2 * e * s);
+  ctx.strokeStyle = css('--line'); ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(cx, 0); ctx.lineTo(cx, h); ctx.moveTo(0, cy); ctx.lineTo(w, cy); ctx.stroke();
+  ctx.setLineDash([3, 3]); ctx.strokeStyle = '#5aa9ff88';
+  ctx.strokeRect(X(-r), Y(-r), 2 * r * s, 2 * r * s);
+  ctx.strokeStyle = '#ff5c5c88'; ctx.strokeRect(X(-P.sat), Y(-P.sat), 2 * P.sat * s, 2 * P.sat * s);
+  ctx.setLineDash([]);
+  ctx.fillStyle = css('--muted'); ctx.font = '10px sans-serif';
+  ctx.fillText(`饱和 ±${P.sat}°`, X(-P.sat) + 3, Y(-P.sat) + 11);
+  ctx.fillText('左倾', 4, cy - 4); ctx.fillText('右倾', w - 26, cy - 4); ctx.fillText('抬头', cx + 4, 12); ctx.fillText('低头', cx + 4, h - 4);
+  const n = Math.min(hist.length, 60);
+  for (let i = hist.length - n; i < hist.length; i++) {
+    const d = hist[i], a = (i - (hist.length - n)) / n;
+    ctx.fillStyle = `rgba(230,233,238,${a * 0.5})`; ctx.fillRect(X(d.re) - 1, Y(d.pe) - 1, 2, 2);
+  }
+  if (T) {
+    ctx.beginPath(); ctx.arc(X(clamp(T.re, -range, range)), Y(clamp(T.pe, -range, range)), 6, 0, Math.PI * 2);
+    ctx.fillStyle = T.state !== 'ACTIVE' ? '#8b94a3' : (T.engX || T.engY) ? css('--ok') : '#e6e9ee'; ctx.fill();
+  }
+}
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+function drawSeries() {
+  const [ctx, w, h] = setupCanvas($('series'));
+  ctx.clearRect(0, 0, w, h);
+  const h1 = h * 0.55, h2 = h - h1 - 8, pad = 30;
+  const N = hist.length; if (!N) return;
+  const x = (i) => pad + (w - pad - 6) * i / (HIST - 1);
+  const range = Math.max(30, P.sat + 5);
+  const yA = (v) => 6 + (h1 - 12) * (0.5 - clamp(v, -range, range) / (2 * range));
+  const vmax = Math.max(50, P.sat * Math.max(P.kx, P.ky) * 1.1);
+  const yV = (v) => h1 + 8 + 6 + (h2 - 12) * (0.5 - clamp(v, -vmax, vmax) / (2 * vmax));
+  ctx.strokeStyle = css('--line'); ctx.lineWidth = 1; ctx.beginPath();
+  ctx.moveTo(pad, yA(0)); ctx.lineTo(w, yA(0)); ctx.moveTo(pad, yV(0)); ctx.lineTo(w, yV(0)); ctx.stroke();
+  ctx.fillStyle = 'rgba(90,169,255,0.08)'; const e = engageEdge(); ctx.fillRect(pad, yA(e), w - pad, yA(-e) - yA(e));
+  ctx.fillStyle = css('--muted'); ctx.font = '10px sans-serif';
+  ctx.fillText(`±${range}°`, 2, 14); ctx.fillText(`±${Math.round(vmax)}`, 2, h1 + 22);
+  const off = HIST - N;
+  const line = (get, y, color) => { ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.beginPath(); for (let i = 0; i < N; i++) { const px = x(i + off), py = y(get(hist[i])); i ? ctx.lineTo(px, py) : ctx.moveTo(px, py); } ctx.stroke(); };
+  line(d => d.re, yA, css('--roll')); line(d => d.pe, yA, css('--pitch'));
+  line(d => d.vx, yV, css('--roll')); line(d => d.vy, yV, css('--pitch'));
+  for (let i = 0; i < N; i++) if (hist[i].event) { ctx.fillStyle = css('--warn'); ctx.fillRect(x(i + off), 0, 1, h); ctx.fillText(hist[i].event, x(i + off) + 2, h - 4); }
+}
+function drawStats() {
+  const rows = [
+    ['遥测频率', `${rateHz} Hz`], ['IMU 新样本', T ? `${imuHz} /s (在 ${rateHz} 行中)` : '—'],
+    ['IMU 样本年龄', T ? `${T.imuAge} ms` : '—'], ['主循环周期', T ? `${(T.loopDt / 1000).toFixed(2)} ms` : '—'],
+    ['日志丢弃', T ? T.dropped : '—'], ['roll / pitch', T ? `${T.roll.toFixed(1)}° / ${T.pitch.toFixed(1)}°` : '—'],
+    ['陀螺(去偏) dps', T ? T.g.map(v => v.toFixed(2)).join(' / ') : '—'],
+    ['加速度 g', T ? `${T.a.map(v => v.toFixed(2)).join(' / ')}  |${Math.hypot(...T.a).toFixed(3)}|` : '—'],
+    ['HID 实发到达率', deliveryText], ['指针原始输入', document.pointerLockElement ? (rawMovement ? '是 (unadjusted)' : '否 (受系统加速影响)') : '未锁定'],
+    ['固件', fw.fw ? `${fw.fw} ${fw.ver} · BSP ${fw.bsp} · IMU ${fw.imu_ok === '1' ? 'OK' : '失败'} ${fw.whoami || ''}` : '—'],
+    ['最近校准', lastCal ? lastCal.replace(/  /g, ' ') : '—'],
+  ];
+  $('stats').innerHTML = rows.map(([k, v]) => `<span>${k}</span><span>${v}</span>`).join('');
+  $('statusText').textContent = link ? (link.kind === 'sim' ? '模拟中：在左下方十字图上拖动 = 转头' : link.kind === 'bridge' ? '已连接（本地桥）' : '已连接（Web Serial）') : '';
+}
+function drawHud() {
+  $('hudL').textContent = `yaw ${yaw.toFixed(1)}°  pitch ${pitch.toFixed(1)}°\n源: ${sourceIsTelemetry() ? '固件串口增量' : '真实鼠标'}  ${degPerCount().toFixed(3)}°/count`;
+  $('hudR').textContent = T ? `${T.state}\nvx ${T.vx.toFixed(0)}  vy ${T.vy.toFixed(0)} c/s` : '';
+}
+setInterval(() => { drawTilt(); drawSeries(); drawStats(); drawHud(); }, 50);
+
+// ---------------------------------------------------------------- recording
+$('btnRec').onclick = () => {
+  if (!rec) { rec = [`# MouthMod look bench capture ${new Date().toISOString()}`, `# params ${JSON.stringify(P)} mount ${$('selUp').value}${$('selFwd').value} sens ${$('mcSens').value}%`]; $('btnRec').textContent = '停止并下载'; $('recInfo').textContent = '记录中…'; send('get'); return; }
+  const blob = new Blob([rec.join('\n') + '\n'], { type: 'text/csv' });
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+  a.download = `look_${new Date().toISOString().replace(/[:.]/g, '-')}.csv`; a.click();
+  $('recInfo').textContent = `${rec.length} 行已下载`; rec = null; $('btnRec').textContent = '开始记录 CSV';
+};
+$('btnExport').onclick = () => {
+  $('exportBox').value =
+`// Tuned on ${new Date().toISOString().slice(0, 10)} with look bench (mount ${$('selUp').value} ${$('selFwd').value}, MC sens ${$('mcSens').value}%)
+static const char* const kDefaultMountUp = "${$('selUp').value}";
+static const char* const kDefaultMountForward = "${$('selFwd').value}";
+static const float kAlpha = ${P.alpha}f;
+static const float kDeadbandDeg = ${P.dead}f;
+static const float kHysteresisDeg = ${P.hyst}f;
+static const float kSaturationDeg = ${P.sat}f;
+static const float kKxCpsPerDeg = ${P.kx}f;
+static const float kKyCpsPerDeg = ${P.ky}f;
+// hmode=${P.hmode} vmode=${P.vmode} invx=${P.invx} invy=${P.invy} (set in defaultMouseLookParams if changed)`;
+};
+
+// ---------------------------------------------------------------- simulation (no hardware)
+// Mirrors firmware formulas (LookController / MouseLookMapper) for UI testing only.
+let sim = null;
+function startSim() {
+  if (link && link.kind !== 'sim') return;
+  sim = { t: 0, state: 'DISARMED', roll: 0, pitch: 0, tr: 0, tp: 0, calT: 0, neutralT: -1, hid: 0,
+    engX: false, engY: false, accX: 0, accY: 0, drag: false, event: '' };
+  link = { kind: 'sim', write: simCommand };
+  sim.timer = setInterval(simStep, 10);
+  $('btnSim').textContent = '停止模拟';
+  log('模拟模式：拖动十字图模拟转头；点“启用”后保持不动 3 s', 'ok');
+  handleLine('#I,fw=simulator,ver=-,bsp=-,imu_ok=1,whoami=sim');
+}
+function stopSim() { if (!sim) return; clearInterval(sim.timer); sim = null; if (link && link.kind === 'sim') link = null; $('btnSim').textContent = '模拟模式（无硬件）'; setBadge(null); }
+$('btnSim').onclick = () => sim ? stopSim() : startSim();
+function simCommand(line) {
+  const [c, a, b] = line.split(/\s+/);
+  if (c === 'arm' && sim.state === 'DISARMED') { simEnter('CALIBRATING', 'cal_start'); sim.calT = sim.t; }
+  else if (c === 'disarm') { if (sim.state !== 'DISARMED' && sim.state !== 'FAULT') simEnter('DISARMED', 'disarm_cmd'); }
+  else if (c === 'hid') sim.hid = Number(a) ? 1 : 0;
+  else if (c === 'set') handleLine(`#P,${a}=${b},hid=${sim.hid}`);
+}
+function simEnter(s, ev) { sim.state = s; sim.event = ev; sim.engX = sim.engY = false; sim.neutralT = -1; handleLine(`#E,${sim.t},${ev},${s}`); }
+function simAxis(e, eng, k) {
+  const m = Math.abs(e);
+  if (eng) { if (m < releaseEdge()) eng = false; } else if (m >= engageEdge()) eng = true;
+  if (!eng) return [0, eng];
+  const sat = Math.min(m, P.sat), sg = Math.sign(e) || 1;
+  return [P.vmode === 1 ? sg * k * Math.max(0, sat - releaseEdge()) : sg * k * sat, eng];
+}
+function simStep() {
+  sim.t += 10;
+  if (!sim.drag) { sim.tr *= 0.9; sim.tp *= 0.9; }
+  const tau = 0.06; sim.roll += (sim.tr - sim.roll) * (0.01 / tau) + (Math.random() - 0.5) * 0.15;
+  sim.pitch += (sim.tp - sim.pitch) * (0.01 / tau) + (Math.random() - 0.5) * 0.15;
+  if (sim.state === 'CALIBRATING') {
+    if (sim.drag) { simEnter('DISARMED', 'fail_motion'); }
+    else if (sim.t - sim.calT >= 3000) { handleLine('#C,status=done,samples=312,bias=0.41/-0.22/0.08,roll0=0,pitch0=0'); simEnter('WAIT_NEUTRAL', 'cal_done'); }
+  } else if (sim.state === 'WAIT_NEUTRAL') {
+    const e = engageEdge();
+    if (Math.abs(sim.roll) < e && Math.abs(sim.pitch) < e) { if (sim.neutralT < 0) sim.neutralT = sim.t; else if (sim.t - sim.neutralT >= 300) simEnter('ACTIVE', 'active'); }
+    else sim.neutralT = -1;
+  }
+  let vx = 0, vy = 0, dx = 0, dy = 0;
+  if (sim.state === 'ACTIVE') {
+    [vx, sim.engX] = simAxis(sim.roll, sim.engX, P.kx); [vy, sim.engY] = simAxis(sim.pitch, sim.engY, P.ky);
+    if (P.invx) vx = -vx; if (P.invy) vy = -vy;
+    sim.accX = vx ? clamp(sim.accX + vx * 0.01, -64, 64) : 0; sim.accY = vy ? clamp(sim.accY + vy * 0.01, -64, 64) : 0;
+    dx = Math.trunc(sim.accX); dy = Math.trunc(sim.accY); sim.accX -= dx; sim.accY -= dy;
+  }
+  sim.dxs = (sim.dxs || 0) + dx; sim.dys = (sim.dys || 0) + dy;
+  if (sim.t % 20 === 0) {
+    const r = sim.roll * Math.PI / 180, p = sim.pitch * Math.PI / 180;
+    const ax = -Math.sin(p), ay = Math.sin(r) * Math.cos(p), az = Math.cos(r) * Math.cos(p);
+    handleLine(`D,${sim.t},10000,${sim.state},1,1,${ax.toFixed(3)},${ay.toFixed(3)},${az.toFixed(3)},0,0,0,${sim.roll.toFixed(2)},${sim.pitch.toFixed(2)},${sim.roll.toFixed(2)},${sim.pitch.toFixed(2)},${vx.toFixed(1)},${vy.toFixed(1)},${sim.dxs},${sim.dys},0,${sim.engX ? 1 : 0}${sim.engY ? 1 : 0},0,${sim.event}`);
+    sim.dxs = 0; sim.dys = 0; sim.event = '';
+  }
+}
+// Drag on the tilt map = head pose (simulation only).
+(() => {
+  const c = $('tilt');
+  const pose = (e) => {
+    if (!sim) return; const rect = c.getBoundingClientRect(), range = Math.max(30, P.sat + 5), s = (rect.width / 2 - 10) / range;
+    sim.tr = clamp((e.clientX - rect.left - rect.width / 2) / s, -range, range); sim.tp = clamp((e.clientY - rect.top - rect.height / 2) / s, -range, range);
+  };
+  c.addEventListener('pointerdown', (e) => { if (!sim) return; sim.drag = true; c.setPointerCapture(e.pointerId); pose(e); });
+  c.addEventListener('pointermove', (e) => { if (sim && sim.drag) pose(e); });
+  c.addEventListener('pointerup', () => { if (sim) sim.drag = false; });
+})();
+
+initScene();
+</script>
+</body>
+</html>
