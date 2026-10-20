@@ -83,6 +83,7 @@ textarea { width: 100%; height: 120px; background: var(--panel2); color: var(--t
   <span id="badge" class="badge DISARMED">未连接</span>
   <span id="statusText" class="muted"></span>
   <span style="flex:1"></span>
+  <a href="float.html" target="_blank" title="需要本地桥；在新标签页打开后可弹出置顶悬浮窗" style="color:inherit;font-size:13px;margin-right:8px">悬浮窗 ↗</a>
   <button id="btnDisarmTop" class="danger" title="快捷键: Esc 或 X">停用 (Esc / X)</button>
 </header>
 
@@ -197,12 +198,13 @@ textarea { width: 100%; height: 120px; background: var(--panel2); color: var(--t
 <script>
 'use strict';
 // ---------------------------------------------------------------- params
-const DEFAULTS = { kx: 40, ky: 30, dead: 3, hyst: 2, sat: 20, alpha: 0.98,
-  hmode: 0, vmode: 0, invx: 0, invy: 0, rate: 50 };
+const DEFAULTS = { kx: 40, ky: 30, dead: 6, hyst: 2, sat: 20, confirm: 80, alpha: 0.98,
+  hmode: 0, vmode: 1, invx: 0, invy: 0, rate: 50 };
 const SLIDERS = [
   ['kx', '左右增益 kx', 0, 150, 1, 'counts/s/°'],
   ['ky', '上下增益 ky', 0, 150, 1, ''],
-  ['dead', '死区 °', 0, 8, 0.5, ''],
+  ['dead', '死区 °', 0, 12, 0.5, ''],
+  ['confirm', '起转确认 ms', 0, 300, 10, ''],
   ['hyst', '迟滞 °', 0, 5, 0.5, ''],
   ['sat', '饱和 °', 5, 40, 1, ''],
   ['alpha', '互补 α', 0.9, 0.995, 0.005, ''],
@@ -210,10 +212,10 @@ const SLIDERS = [
 ];
 let P = loadParams();
 function loadParams() {
-  try { return Object.assign({}, DEFAULTS, JSON.parse(localStorage.getItem('mm.params') || '{}')); }
+  try { return Object.assign({}, DEFAULTS, JSON.parse(localStorage.getItem('mm.params.v2') || '{}')); }
   catch (e) { return Object.assign({}, DEFAULTS); }
 }
-function saveParams() { try { localStorage.setItem('mm.params', JSON.stringify(P)); } catch (e) {} }
+function saveParams() { try { localStorage.setItem('mm.params.v2', JSON.stringify(P)); } catch (e) {} }
 
 // ---------------------------------------------------------------- dom
 const $ = (id) => document.getElementById(id);
@@ -401,6 +403,7 @@ function handleLine(line) {
     case '#ERR': log(line, 'err'); break;
     case '#OK': log(line, 'ok'); break;
     case '#Q': chan = parseKV(parts.slice(1)); log('通道参数: ' + parts.slice(1).join(' ')); break;
+    case '#F': log('前台门控: ' + (parseKV(parts.slice(2)).front === '1' ? '放行' : '拦截'), 'ev'); break;
     case '#K': log('游戏输出: ' + parts.slice(2).join('  '), 'ev'); break;
     case '#H': break;
     default: log(line);

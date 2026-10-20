@@ -12,6 +12,9 @@
 //   hystMode 1 (outer): engage |e| >= dead + hyst, release |e| < dead
 //   velMode  0 (spec):  v = k * clamp(e, +/-sat)
 //   velMode  1 (ramp):  v = k * sign(e) * (min(|e|, sat) - releaseEdge)
+// engageConfirmS: |e| must stay at or beyond the engage edge this long
+// before an axis starts moving, so a brief bump does not turn the camera
+// (0 = engage at once, the spec behaviour).
 #ifndef MOUTHMOD_MOUSE_LOOK_MAPPER_H
 #define MOUTHMOD_MOUSE_LOOK_MAPPER_H
 
@@ -27,6 +30,7 @@ struct MouseLookParams {
   uint8_t velMode;
   bool invertX;
   bool invertY;
+  float engageConfirmS;
 };
 
 MouseLookParams defaultMouseLookParams();
@@ -36,10 +40,14 @@ bool sanitizeMouseLookParams(MouseLookParams* p);
 
 class LookAxis {
  public:
-  LookAxis() : engaged_(false) {}
-  void reset() { engaged_ = false; }
-  // Returns velocity in counts/s for a tilt error in degrees.
-  float update(float errDeg, float k, const MouseLookParams& p);
+  LookAxis() : engaged_(false), aboveS_(0.0f) {}
+  void reset() {
+    engaged_ = false;
+    aboveS_ = 0.0f;
+  }
+  // Returns velocity in counts/s for a tilt error in degrees; dtS is the
+  // time since the previous update (for the engage confirmation).
+  float update(float errDeg, float k, const MouseLookParams& p, float dtS);
   bool engaged() const { return engaged_; }
 
   static float engageEdge(const MouseLookParams& p);
@@ -47,6 +55,7 @@ class LookAxis {
 
  private:
   bool engaged_;
+  float aboveS_;
 };
 
 struct LookVelocity {
@@ -64,7 +73,7 @@ class MouseLookMapper {
   void reset();
 
   // rollErr > 0: head rolled right; pitchErr > 0: head pitched nose-down.
-  LookVelocity update(float rollErrDeg, float pitchErrDeg);
+  LookVelocity update(float rollErrDeg, float pitchErrDeg, float dtS = 0.01f);
 
  private:
   MouseLookParams params_;

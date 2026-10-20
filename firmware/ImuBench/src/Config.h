@@ -9,7 +9,7 @@ namespace cfg {
 
 // --- Build / identity ---
 static const char* const kFirmwareName = "MouthMod-ImuBench";
-static const char* const kFirmwareVersion = "0.5.0";
+static const char* const kFirmwareVersion = "0.6.0";
 
 // --- Loop ---
 static const uint32_t kLoopPeriodUs = 10000;  // 100 Hz, non-blocking (frozen)
@@ -29,7 +29,12 @@ static const char* const kDefaultMountForward = "+X";
 
 // --- Head look (spec starting points; k is per-person) ---
 static const float kAlpha = 0.98f;
-static const float kDeadbandDeg = 3.0f;
+// Engage edge raised from the spec start point 3 deg to 6 deg after bench
+// use (small head motions turned the camera); ramp velocity so speed starts
+// near zero at the edge, and a bump must last kEngageConfirmMs (D27).
+static const float kDeadbandDeg = 6.0f;
+static const uint8_t kVelMode = 1;            // 0 = spec k*e, 1 = ramp
+static const float kEngageConfirmMs = 80.0f;
 static const float kHysteresisDeg = 2.0f;
 static const float kSaturationDeg = 20.0f;
 static const float kKxCpsPerDeg = 40.0f;      // provisional, counts/s per deg
@@ -78,6 +83,12 @@ static const uint32_t kSipDisarmUs = 150000;  // frozen start point
 // enable input also needs the serial port open.
 static const bool kSipArms = true;
 static const uint32_t kSipArmUs = 1000000;    // frozen start point
+
+// --- Focus gate (host tells the board when Minecraft is frontmost) ---
+// "fgate 1" turns it on; the host then repeats "focus 1" while Minecraft is
+// in front. No refresh within this time counts as "not in front", so a dead
+// host program also stops the output. Applies to real HID output only.
+static const uint32_t kFocusHoldUs = 700000;
 
 // --- Logging ---
 // USB CDC ignores baud, but never use 1200 (it triggers the bootloader).

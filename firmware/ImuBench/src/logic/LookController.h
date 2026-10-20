@@ -113,6 +113,7 @@ class LookController {
   uint64_t neutralSinceUs_;
   bool neutralTiming_;
   bool otherNeutral_;
+  uint64_t lastMapUs_;
 
   bool calibrated_;
   Vec3 bias_;

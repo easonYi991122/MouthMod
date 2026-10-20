@@ -12,9 +12,15 @@ test page works in any browser (no Web Serial needed).
 Safety: when the last page disconnects the bridge sends "hid 0" and
 "disarm"; closing the bridge closes the port (DTR low), which also disarms.
 
+Focus: on macOS the bridge checks the frontmost app every 250 ms (lsappinfo,
+no extra permission) and keeps telling the board "focus 1" while Minecraft
+is in front, "focus 0" when it leaves. The board only acts on it after
+"fgate 1" (the floating window's "只在 Minecraft 前台时输出").
+
 Usage:
   python3 bridge.py                  # auto-detect /dev/cu.usbmodem*
   python3 bridge.py --serial /dev/cu.usbmodem1101 --http 8765
+  python3 bridge.py --focus-app "minecraft"   # substring of the app name
 """
 import argparse
 import glob
@@ -22,6 +28,7 @@ import json
 import os
 import queue
 import select
+import subprocess
 import sys
 import termios
 import threading
@@ -136,7 +143,52 @@ class SerialLink:
             print("[bridge] last page closed -> hid 0, disarm", flush=True)
 
 
+def frontmost_app():
+    """Display name of the frontmost app on macOS, or None if unknown."""
+    try:
+        asn = subprocess.run(["lsappinfo", "front"], capture_output=True,
+                             text=True, timeout=1).stdout.strip()
+        if not asn:
+            return None
+        out = subprocess.run(["lsappinfo", "info", "-only", "name", asn],
+                             capture_output=True, text=True, timeout=1).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    # Output looks like: "LSDisplayName"="Minecraft Education"
+    _, _, value = out.partition("=")
+    return value.strip().strip('"') or None
+
+
+class FocusWatcher:
+    """Tells the board whether Minecraft is the frontmost app."""
+
+    def __init__(self, link, match):
+        self.link = link
+        self.match = match.lower()
+        self.name = None
+        self.front = False
+
+    def run(self):
+        last_sent = 0.0
+        while True:
+            name = frontmost_app()
+            front = bool(name) and self.match in name.lower()
+            if name != self.name or front != self.front:
+                self.name, self.front = name, front
+                self.link.broadcast(f"#BRIDGE,front,{name or '?'},{1 if front else 0}")
+                last_sent = 0.0  # report the change at once
+            now = time.monotonic()
+            if front and now - last_sent >= 0.25:
+                self.link.write("focus 1\n")  # heartbeat; the board times out
+                last_sent = now
+            elif not front and last_sent == 0.0:
+                self.link.write("focus 0\n")
+                last_sent = now
+            time.sleep(0.25)
+
+
 LINK = None
+FOCUS = None
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -153,7 +205,10 @@ class Handler(SimpleHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/bridge-info":
             body = json.dumps({"bridge": True, "port": LINK.current,
-                               "lines": LINK.lines}).encode()
+                               "lines": LINK.lines,
+                               "front": FOCUS.name if FOCUS else None,
+                               "minecraft_front": FOCUS.front if FOCUS else None,
+                               }).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
@@ -168,6 +223,9 @@ class Handler(SimpleHTTPRequestHandler):
             try:
                 state = f"#BRIDGE,connected,{LINK.current}" if LINK.current else "#BRIDGE,waiting"
                 self.wfile.write(f"data: {state}\n\n".encode())
+                if FOCUS and FOCUS.name:
+                    front = f"#BRIDGE,front,{FOCUS.name},{1 if FOCUS.front else 0}"
+                    self.wfile.write(f"data: {front}\n\n".encode())
                 self.wfile.flush()
                 while True:
                     try:
@@ -196,16 +254,25 @@ class Handler(SimpleHTTPRequestHandler):
 
 
 def main():
-    global LINK
+    global LINK, FOCUS
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--serial", help="serial device (default: auto-detect)")
     ap.add_argument("--http", type=int, default=8765, help="HTTP port")
+    ap.add_argument("--focus-app", default="minecraft",
+                    help="substring of the game's app name (default: minecraft)")
     args = ap.parse_args()
     LINK = SerialLink(args.serial)
     threading.Thread(target=LINK.run, daemon=True).start()
+    if sys.platform == "darwin":
+        FOCUS = FocusWatcher(LINK, args.focus_app)
+        threading.Thread(target=FOCUS.run, daemon=True).start()
+    else:
+        print("[bridge] focus detection only on macOS; fgate would block output",
+              flush=True)
     server = ThreadingHTTPServer(("127.0.0.1", args.http), Handler)
     server.daemon_threads = True
     print(f"[bridge] open http://localhost:{args.http}  (Ctrl+C to stop)", flush=True)
+    print(f"[bridge] floating window: http://localhost:{args.http}/float.html", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

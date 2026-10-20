@@ -206,6 +206,29 @@ void test_mapper_outer_and_ramp_modes_and_invert() {
   assert(near(v.vxCps, -170, 1e-3f));  // -(10*(20-3))
 }
 
+void test_mapper_engage_confirmation() {
+  MouseLookMapper m;
+  MouseLookParams p = defaultMouseLookParams();
+  p.kxCpsPerDeg = 10;
+  p.deadbandDeg = 6;   // engage 6, release 4
+  p.velMode = 1;
+  p.engageConfirmS = 0.08f;
+  m.setParams(p);
+  // A 50 ms bump past the edge: no motion.
+  for (int i = 0; i < 5; ++i) assert(m.update(9.0f, 0, 0.01f).vxCps == 0);
+  assert(m.update(2.0f, 0, 0.01f).vxCps == 0);
+  // Held 80 ms: moves, ramp from the release edge (10 * (9 - 4)).
+  LookVelocity v;
+  for (int i = 0; i < 7; ++i) assert(m.update(9.0f, 0, 0.01f).vxCps == 0);
+  v = m.update(9.0f, 0, 0.01f);
+  assert(v.engagedX && near(v.vxCps, 50, 1e-3f));
+  // Once moving, dropping inside the hysteresis band keeps moving.
+  v = m.update(5.0f, 0, 0.01f);
+  assert(v.engagedX && near(v.vxCps, 10, 1e-3f));
+  v = m.update(3.9f, 0, 0.01f);
+  assert(!v.engagedX);
+}
+
 void test_sanitize() {
   MouseLookParams p = defaultMouseLookParams();
   p.kxCpsPerDeg = -5;
@@ -419,6 +442,7 @@ int main() {
   test_still_calibration();
   test_mapper_inner_hysteresis_spec_velocity();
   test_mapper_outer_and_ramp_modes_and_invert();
+  test_mapper_engage_confirmation();
   test_sanitize();
   test_delta_accumulator();
   test_controller_powerup_disarmed_no_output();

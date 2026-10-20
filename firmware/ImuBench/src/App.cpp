@@ -64,6 +64,9 @@ float gTurnRateCps = 0.0f;
 float gTurnFrac = 0.0f;
 
 bool gHidEnabled = cfg::kHidEnabledAtBoot;
+bool gFocusGate = false;       // "fgate 1": real HID only while Minecraft is front
+uint64_t gFocusUntilUs = 0;    // refreshed by the host's "focus 1"
+bool gFocusLogged = true;      // last reported gate result (for #F lines)
 uint16_t gTelemetryHz = cfg::kDefaultTelemetryHz;
 
 uint64_t gNextTickUs = 0;
@@ -142,12 +145,14 @@ void printChannels() {
 void printParams() {
   const MouseLookParams& p = gLook.lookParams();
   emitf("#P,kx=%.2f,ky=%.2f,dead=%.2f,hyst=%.2f,sat=%.2f,hmode=%u,vmode=%u,"
-        "invx=%u,invy=%u,alpha=%.4f,mount=%s%s,hid=%u,rate=%u\n",
+        "confirm=%.0f,invx=%u,invy=%u,alpha=%.4f,mount=%s%s,hid=%u,rate=%u,"
+        "fgate=%u\n",
         p.kxCpsPerDeg, p.kyCpsPerDeg, p.deadbandDeg, p.hysteresisDeg,
-        p.saturationDeg, p.hystMode, p.velMode, p.invertX ? 1U : 0U,
+        p.saturationDeg, p.hystMode, p.velMode, p.engageConfirmS * 1e3f,
+        p.invertX ? 1U : 0U,
         p.invertY ? 1U : 0U, gLook.alpha(), signedAxisName(gLook.mount().up()),
         signedAxisName(gLook.mount().forward()), gHidEnabled ? 1U : 0U,
-        gTelemetryHz);
+        gTelemetryHz, gFocusGate ? 1U : 0U);
 }
 
 void printIdentity() {
@@ -218,6 +223,7 @@ bool setParam(const char* name, const char* value) {
   else if (!strcmp(name, "vmode")) p.velMode = static_cast<uint8_t>(v);
   else if (!strcmp(name, "invx")) p.invertX = v != 0.0f;
   else if (!strcmp(name, "invy")) p.invertY = v != 0.0f;
+  else if (!strcmp(name, "confirm")) p.engageConfirmS = v * 1e-3f;  // ms
   else if (!strcmp(name, "alpha")) {
     gLook.setAlpha(v);
     return true;
@@ -397,6 +403,12 @@ void handleCommand(char* line) {
     clearBenchActions();
     gGame.releaseAll();        // committed state restarts from neutral
     emitf("#OK,hid=%u\n", gHidEnabled ? 1U : 0U);
+  } else if (!strcmp(c, "fgate") && argc == 2) {
+    gFocusGate = atoi(argv[1]) != 0;
+    emitf("#OK,fgate=%u\n", gFocusGate ? 1U : 0U);
+  } else if (!strcmp(c, "focus") && argc == 2) {
+    // Quiet on purpose: the host repeats this several times a second.
+    gFocusUntilUs = atoi(argv[1]) != 0 ? nowUs() + cfg::kFocusHoldUs : 0;
   } else if (!strcmp(c, "chan") && argc == 3) {
     setChannel(argv[1], atoi(argv[2]) != 0);
   } else if (!strcmp(c, "hang")) {
@@ -672,7 +684,15 @@ void controlTick(uint64_t t) {
 
   // 5. Channels -> desired output. Velocity -> integer deltas over the real
   // loop interval; game actions -> GameInput (bench: serial act/tap).
-  const bool active = (k.state == LOOK_ACTIVE);
+  // Focus gate: with real HID on and the gate enabled, game output only
+  // while the host reports Minecraft frontmost; leaving it releases all.
+  const bool focusOk = !gHidEnabled || !gFocusGate || t < gFocusUntilUs;
+  if (focusOk != gFocusLogged) {
+    gFocusLogged = focusOk;
+    emitf("#F,%lu,gate=%u,front=%u\n", static_cast<unsigned long>(t / 1000U),
+          gFocusGate ? 1U : 0U, focusOk ? 1U : 0U);
+  }
+  const bool active = (k.state == LOOK_ACTIVE) && focusOk;
   const float dt = gLoopDtUs * 1e-6f;
   const bool turning = active && gTurnLeft != 0;
   if (active && !turning) {
@@ -774,6 +794,8 @@ void appSetup() {
   p.deadbandDeg = cfg::kDeadbandDeg;
   p.hysteresisDeg = cfg::kHysteresisDeg;
   p.saturationDeg = cfg::kSaturationDeg;
+  p.velMode = cfg::kVelMode;
+  p.engageConfirmS = cfg::kEngageConfirmMs * 1e-3f;
   gLook.setLookParams(p);
 
   // Joystick ADC: [Z] section 6 start configuration (12-bit, 3.6 V range).

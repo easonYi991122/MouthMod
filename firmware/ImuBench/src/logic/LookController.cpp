@@ -32,6 +32,7 @@ LookController::LookController()
       neutralSinceUs_(0U),
       neutralTiming_(false),
       otherNeutral_(true),
+      lastMapUs_(0U),
       calibrated_(false),
       bias_(makeVec3(0.0f, 0.0f, 0.0f)),
       roll0_(0.0f),
@@ -189,13 +190,17 @@ LookTick LookController::tick(uint64_t nowUs, const ImuInput& imu,
       neutralSinceUs_ = nowUs;
     } else if (nowUs - neutralSinceUs_ >= timing_.neutralHoldUs) {
       mapper_.reset();
+      lastMapUs_ = nowUs;
       enter(LOOK_ACTIVE, "active", &out);
     }
   }
 
   // 6. Output.
   if (state_ == LOOK_ACTIVE) {
-    out.velocity = mapper_.update(out.rollErrDeg, out.pitchErrDeg);
+    float dtS = static_cast<float>(nowUs - lastMapUs_) * 1e-6f;
+    if (dtS > 0.1f) dtS = 0.1f;  // a stall must not count as a long hold
+    lastMapUs_ = nowUs;
+    out.velocity = mapper_.update(out.rollErrDeg, out.pitchErrDeg, dtS);
   }
   out.state = state_;
   return out;

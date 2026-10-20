@@ -6,9 +6,10 @@
 //       (head back to neutral 300 ms) --> ACTIVE (tilt -> mouse velocity).
 //       IMU silent > 100 ms -> FAULT (latched until "ack").
 // Mapping (V5 spec): vx = kx*(roll-roll0), vy = ky*(pitch-pitch0) in counts/s,
-//       dead-band 3 deg, hysteresis 2 deg (release below 1 deg), saturation 20 deg.
+//       engage at 6 deg held 80 ms, release below 4 deg, speed ramps from the
+//       release edge, saturation 20 deg (spec start point was 3 deg, no ramp).
 // Serial commands (newline-terminated): arm | disarm | x | ack | hid 0|1 |
-//       set kx|ky|dead|hyst|sat|alpha|rate|invx|invy <value> | mount <up> <fwd> | get
+//       set kx|ky|dead|hyst|sat|confirm(ms)|alpha|rate|invx|invy <value> | mount <up> <fwd> | get
 // Telemetry "D," lines match tools/look_demo, so the test page still works.
 #include <Adafruit_TinyUSB.h>
 #include <LSM6DS3.h>
@@ -25,7 +26,9 @@ const float GYRO_LSB = 8.75e-3f;        // dps/LSB at +/-245 dps
 const float ACC_LSB = 0.061e-3f;        // g/LSB at +/-2 g
 const bool DISARM_ON_SERIAL_CLOSE = true;
 
-float kx = 40, ky = 30, dead = 3, hyst = 2, sat = 20, alpha = 0.98f;
+float kx = 40, ky = 30, dead = 6, hyst = 2, sat = 20, alpha = 0.98f;
+float confirmS = 0.08f;          // a tilt must last this long to start turning
+float aboveX = 0, aboveY = 0;    // time spent past the engage edge
 bool invX = false, invY = false, hidOn = false;
 uint16_t telemHz = 50;
 int upAx = 2, upSg = 1, fwAx = 0, fwSg = 1;  // mount: +Z up, +X forward
@@ -87,6 +90,7 @@ void enter(State s, const char* ev) {
   stateSinceUs = micros();
   neutralTiming = false;
   engX = engY = false;
+  aboveX = aboveY = 0;
   accX = accY = 0;
   lineEvent = ev;
   emitf("#E,%lu,%s,%s\n", millis(), ev, STATE_NAME[s]);
@@ -150,13 +154,14 @@ void updateFilter(float dt) {
   }
 }
 
-// Dead-band + hysteresis + saturation for one axis -> counts/s.
-float lookAxis(float e, float k, bool& eng) {
-  float m = fabsf(e);
-  if (eng && m < max(0.0f, dead - hyst)) eng = false;
-  else if (!eng && m >= dead) eng = true;
+// Dead-band + confirm time + hysteresis + saturation for one axis -> counts/s.
+float lookAxis(float e, float k, bool& eng, float& above, float dt) {
+  float m = fabsf(e), release = max(0.0f, dead - hyst);
+  if (eng && m < release) { eng = false; above = 0; }
+  else if (!eng && m >= dead) { above += dt; if (above >= confirmS) eng = true; }
+  else if (!eng) above = 0;    // the bump ended before the confirm time
   if (!eng) return 0;
-  return (e < 0 ? -k : k) * min(m, sat);
+  return (e < 0 ? -k : k) * max(0.0f, min(m, sat) - release);  // ramp from 0
 }
 
 // One HID report per loop; pending releases go first.
@@ -183,8 +188,9 @@ bool parseAxis(const char* t, int& ax, int& sg) {
 
 void printParams() {
   const char* ax = "XYZ";
-  emitf("#P,kx=%.2f,ky=%.2f,dead=%.2f,hyst=%.2f,sat=%.2f,alpha=%.4f,invx=%d,invy=%d,"
-        "mount=%c%c%c%c,hid=%d,rate=%u\n", kx, ky, dead, hyst, sat, alpha, invX, invY,
+  emitf("#P,kx=%.2f,ky=%.2f,dead=%.2f,hyst=%.2f,sat=%.2f,confirm=%.0f,alpha=%.4f,invx=%d,"
+        "invy=%d,mount=%c%c%c%c,hid=%d,rate=%u\n", kx, ky, dead, hyst, sat, confirmS * 1e3f,
+        alpha, invX, invY,
         upSg > 0 ? '+' : '-', ax[upAx], fwSg > 0 ? '+' : '-', ax[fwAx], hidOn, telemHz);
 }
 
@@ -214,6 +220,7 @@ void handleCommand(char* line) {
     else if (!strcmp(b, "dead")) dead = v;
     else if (!strcmp(b, "hyst")) hyst = v;
     else if (!strcmp(b, "sat")) sat = v;
+    else if (!strcmp(b, "confirm")) confirmS = constrain(v, 0.0f, 500.0f) * 1e-3f;
     else if (!strcmp(b, "alpha") && v > 0 && v < 1) alpha = v;
     else if (!strcmp(b, "rate")) telemHz = constrain((int)v, 0, 100);
     else if (!strcmp(b, "invx")) invX = v != 0;
@@ -230,7 +237,7 @@ void handleCommand(char* line) {
       printParams();
     }
   } else if (!strcmp(a, "get")) {
-    emitf("#I,fw=MouthMod-ImuLookMini,ver=0.1.0,bsp=%s,imu_ok=%d\n", ARDUINO_BSP_VERSION, imuOk);
+    emitf("#I,fw=MouthMod-ImuLookMini,ver=0.2.0,bsp=%s,imu_ok=%d\n", ARDUINO_BSP_VERSION, imuOk);
     printParams();
   }
 }
@@ -322,9 +329,9 @@ void loop() {
   // 4. Output: velocity -> integer counts over the real loop interval.
   float vx = 0, vy = 0;
   if (state == ACTIVE) {
-    vx = lookAxis(re, kx, engX) * (invX ? -1 : 1);  // + = turn right
-    vy = lookAxis(pe, ky, engY) * (invY ? -1 : 1);  // + = look down
     float dt = loopDtUs * 1e-6f;
+    vx = lookAxis(re, kx, engX, aboveX, dt) * (invX ? -1 : 1);  // + = turn right
+    vy = lookAxis(pe, ky, engY, aboveY, dt) * (invY ? -1 : 1);  // + = look down
     accX = vx ? constrain(accX + vx * dt, -64.0f, 64.0f) : 0;  // cap stale motion
     accY = vy ? constrain(accY + vy * dt, -64.0f, 64.0f) : 0;
   }
