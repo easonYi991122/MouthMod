@@ -13,15 +13,22 @@ MouthMod/
     src/hardware/ImuReader.*    板载 LSM6DS3TR-C（内部 Wire1, 0x6A），轮询 + 每次 I2C 都检查
     src/hardware/HidOutput.*    TinyUSB 键盘+鼠标复合 HID，release-all 优先
     src/logic/                  纯逻辑：安装方向、互补滤波、静止校准、视角映射、状态机
+    src/logic/GameInput.*       Minecraft Education 适配：各通道电平 → 完整键盘状态 + 鼠标报告
+    src/logic/JoystickMapper.*  摇杆 → W/A/S/D（移植自组员代码，按规格归一化与迟滞）
+    src/logic/PressureChannel.* HX710B 压力 → 吹/吸/咬（移植自组员代码，带符号、基线跟踪）
+    src/hardware/Hx710b.*       HX710B 非阻塞读取（27 脉冲 = 40 Hz）
   tests/native/                 逻辑的主机端测试
   scripts/test-native.sh        编译并运行主机端测试
   tools/look_demo/index.html    浏览器测试页（3D 体素场景、调参、图表）
   tools/look_demo/bridge.py     串口→浏览器本地桥（标准库，无需安装）
   tools/macos/platform.local.txt  macOS 编译修复（见下）
   docs/imu-decisions.md         规格没写死、本工程暂定的实现选择
+  docs/minecraft-education.md   为什么保持键鼠、按键映射、合并接口、今晚实机测试步骤
 ```
 
 ## 要不要现在装 Minecraft？
+
+> 2026-10-19 更新：已经进入实机阶段。键鼠还是手柄、游戏设置、合并接口和测试表，见 [docs/minecraft-education.md](docs/minecraft-education.md)。
 
 调 IMU 这一阶段不需要。测试页能覆盖这阶段的检查项：
 
@@ -96,8 +103,15 @@ python3 tools/look_demo/bridge.py   # 在仓库根目录运行
 | `set <k> <v>` | `kx ky dead hyst sat alpha hmode vmode invx invy rate` |
 | `mount <up> <fwd>` | 例：`mount -Y +Z`；修改后自动停用，需要重新校准 |
 | `get` | 打印 `#I` 身份、`#P` 参数、`#C` 校准结果、`#H` 列名 |
+| `act <w\|a\|s\|d\|jump\|use> <0\|1\|ms>` | 仅 ACTIVE 时可用：模拟摇杆、咬合、吹气的电平。`1` 表示一直保持，直到发 `0`；≥2 表示保持这么多毫秒；`act clear` 全部清除 |
+| `tap jump\|use` | 仅 ACTIVE 时可用：一次很短的咬合或吹气，用来检查 60 ms 最短按住 |
+| `chan <joy\|breath\|bite> <0\|1>` | 打开或关闭某个通道（默认摇杆、吹吸打开，咬合关闭）。没接的传感器要先关掉；切换后会停用 |
+| `jspan` | 仅 DISARMED 时可用：先保持松杆，再在 6 s 内把四个方向各推到舒适的极限，记录每人的摇杆行程 |
+| `set <jon\|joff\|jswap\|jinvx\|jinvy> <v>` | 摇杆的触发/释放阈值（按跨度归一化）、交换轴、反转方向 |
+| `set <bsign\|bon\|boff\|son\|soff\|brel> <v>` | 吹吸：符号（±1）、吹气触发/释放、吸气触发/释放（counts）、释放延迟（ms）。`ksign/kon/koff` 对应咬合 |
+| `turn <counts> [cps]` | 仅 ACTIVE 时可用：以给定速率发出正好这么多的鼠标 X 计数（期间头部视角暂停），用来测游戏里的度/计数和鼠标线性 |
 
-板子输出的行：`#I` 身份/元数据，`#P` 参数，`#C` 校准结果，`#E` 事件，`#OK/#ERR` 命令回执，`D,` 数据行。
+板子输出的行：`#I` 身份/元数据，`#P` 参数，`#Q` 摇杆/压力通道参数，`S,` 通道数据（20 Hz，列名见 `#HS`），`#C` 校准结果，`#E` 事件，`#K` 主机实际收到的按键/右键状态（变化时才输出），`#OK/#ERR` 命令回执，`D,` 数据行。
 `D` 行各列：`t_ms, loop_dt_us, state, imu_new, imu_age_ms, ax_g, ay_g, az_g, gx_dps, gy_dps, gz_dps, roll_deg, pitch_deg, roll_err, pitch_err, vx_cps, vy_cps, dx, dy, hid, engaged, log_dropped, event`。
 其中加速度和陀螺是头部坐标系下的值（x 前、y 左、z 上），陀螺已去零偏；`dx/dy` 是相邻两行之间实际提交的计数之和；`engaged` 是两位数字，分别表示 X 轴和 Y 轴是否越过死区。
 发送是有界的：缓冲区不够时丢弃这一行并计入 `log_dropped`，不会阻塞主循环。

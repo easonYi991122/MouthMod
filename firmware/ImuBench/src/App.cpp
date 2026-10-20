@@ -9,10 +9,14 @@
 
 #include "Config.h"
 #include "hardware/HidOutput.h"
+#include "hardware/Hx710b.h"
 #include "hardware/ImuReader.h"
+#include "logic/GameInput.h"
+#include "logic/JoystickMapper.h"
 #include "logic/LookController.h"
 #include "logic/MonotonicClock.h"
 #include "logic/MouseLookMapper.h"
+#include "logic/PressureChannel.h"
 
 namespace {
 
@@ -22,6 +26,37 @@ LookController gLook;
 MonotonicClock64 gClock;
 DeltaAccumulator gAccX(cfg::kMaxPendingCounts);
 DeltaAccumulator gAccY(cfg::kMaxPendingCounts);
+GameInput gGame;
+
+// Body channels (ported from the team's joystick and puff sketches).
+JoystickMapper gJoy;
+PressureChannel gBreath;  // module #1: puff -> right button, sip -> disarm
+PressureChannel gBite;    // module #2: bite -> Space
+Hx710b gBreathHx(cfg::kPinBreathOut, cfg::kPinBreathSck);
+Hx710b gBiteHx(cfg::kPinBiteOut, cfg::kPinBiteSck);
+bool gUseJoy = cfg::kUseJoystick;
+bool gUseBreath = cfg::kUseBreath;
+bool gUseBite = cfg::kUseBite;
+uint64_t gBreathSinceUs = 0;  // enable time, starts the startup grace
+uint64_t gBiteSinceUs = 0;
+uint64_t gSpanUntilUs = 0;    // "jspan" capture end; 0 = idle
+bool gSipFired = false;
+int gJoyRaw[2] = {0, 0};
+uint64_t gNextSensorUs = 0;
+
+// Bench-only action source (serial "act"/"tap"), OR-ed with the channels.
+GameIntent gBench = noGameIntent();
+uint64_t gActUntilUs[6] = {0, 0, 0, 0, 0, 0};  // 0 = held until "act x 0"
+bool gTapJump = false;
+bool gTapUse = false;
+uint8_t gLoggedKeys[6] = {0, 0, 0, 0, 0, 0};
+uint8_t gLoggedButtons = 0;
+
+// Bench-only sensitivity test (serial "turn"): exact count of mouse X counts.
+int32_t gTurnLeft = 0;
+int32_t gTurnTotal = 0;
+float gTurnRateCps = 0.0f;
+float gTurnFrac = 0.0f;
 
 bool gHidEnabled = cfg::kHidEnabledAtBoot;
 uint16_t gTelemetryHz = cfg::kDefaultTelemetryHz;
@@ -78,6 +113,25 @@ void printHeader() {
   emit("#H,t_ms,loop_dt_us,state,imu_new,imu_age_ms,ax_g,ay_g,az_g,"
        "gx_dps,gy_dps,gz_dps,roll_deg,pitch_deg,roll_err,pitch_err,"
        "vx_cps,vy_cps,dx,dy,hid,engaged,log_dropped,event\n");
+  emit("#HS,t_ms,joy_x_raw,joy_y_raw,joy_x_norm,joy_y_norm,joy_keys,"
+       "breath_raw,breath_baseline,breath_p,puff,sip,bite_raw,bite_baseline,"
+       "bite_p,bite,breath_age_ms\n");
+}
+
+void printChannels() {
+  const JoystickParams& j = gJoy.params();
+  const PressureParams& b = gBreath.params();
+  const PressureParams& k = gBite.params();
+  emitf("#Q,joy=%u,jcenter=%.0f/%.0f,jon=%.3f,joff=%.3f,jspan=%.0f/%.0f/%.0f/%.0f,"
+        "jswap=%u,jinvx=%u,jinvy=%u,breath=%u,bsign=%d,bon=%ld,boff=%ld,son=%ld,"
+        "soff=%ld,brel_ms=%lu,bite=%u,ksign=%d,kon=%ld,koff=%ld\n",
+        gUseJoy ? 1U : 0U, gJoy.center(0), gJoy.center(1), j.onNorm, j.offNorm,
+        j.spanPos[0], j.spanNeg[0], j.spanPos[1], j.spanNeg[1], j.swapXY ? 1U : 0U,
+        j.invertX ? 1U : 0U, j.invertY ? 1U : 0U, gUseBreath ? 1U : 0U, b.sign,
+        static_cast<long>(b.onCounts), static_cast<long>(b.offCounts),
+        static_cast<long>(b.sipOnCounts), static_cast<long>(b.sipOffCounts),
+        static_cast<unsigned long>(b.releaseHoldUs / 1000U), gUseBite ? 1U : 0U,
+        k.sign, static_cast<long>(k.onCounts), static_cast<long>(k.offCounts));
 }
 
 void printParams() {
@@ -111,10 +165,42 @@ void printCalibration() {
         r.gyroStdDps.z, r.roll0Deg, r.pitch0Deg);
 }
 
+// Channel thresholds: jon joff jswap jinvx jinvy | bsign bon boff son soff
+// brel(ms) | ksign kon koff. Takes effect at once; copy final values into
+// the defaults in JoystickMapper.cpp / PressureChannel.cpp.
+bool setChannelParam(const char* name, float v) {
+  JoystickParams j = gJoy.params();
+  PressureParams b = gBreath.params();
+  PressureParams k = gBite.params();
+  const int8_t sign = v < 0 ? -1 : 1;
+  const int32_t counts = static_cast<int32_t>(v);
+  if (!strcmp(name, "jon")) j.onNorm = v;
+  else if (!strcmp(name, "joff")) j.offNorm = v;
+  else if (!strcmp(name, "jswap")) j.swapXY = v != 0.0f;
+  else if (!strcmp(name, "jinvx")) j.invertX = v != 0.0f;
+  else if (!strcmp(name, "jinvy")) j.invertY = v != 0.0f;
+  else if (!strcmp(name, "bsign")) b.sign = sign;
+  else if (!strcmp(name, "bon")) b.onCounts = counts;
+  else if (!strcmp(name, "boff")) b.offCounts = counts;
+  else if (!strcmp(name, "son")) b.sipOnCounts = counts;
+  else if (!strcmp(name, "soff")) b.sipOffCounts = counts;
+  else if (!strcmp(name, "brel")) b.releaseHoldUs = static_cast<uint32_t>(v * 1000.0f);
+  else if (!strcmp(name, "ksign")) k.sign = sign;
+  else if (!strcmp(name, "kon")) k.onCounts = counts;
+  else if (!strcmp(name, "koff")) k.offCounts = counts;
+  else return false;
+  gJoy.setParams(j);
+  gBreath.setParams(b);
+  gBite.setParams(k);
+  printChannels();
+  return true;
+}
+
 bool setParam(const char* name, const char* value) {
   char* end = 0;
   const float v = strtof(value, &end);
   if (end == value) return false;
+  if (setChannelParam(name, v)) return true;
   MouseLookParams p = gLook.lookParams();
   if (!strcmp(name, "kx")) p.kxCpsPerDeg = v;
   else if (!strcmp(name, "ky")) p.kyCpsPerDeg = v;
@@ -138,6 +224,144 @@ bool setParam(const char* name, const char* value) {
   return true;
 }
 
+void clearBenchActions() {
+  gBench = noGameIntent();
+  memset(gActUntilUs, 0, sizeof(gActUntilUs));
+  gTapJump = gTapUse = false;
+  if (gTurnLeft != 0) {
+    emitf("#ERR,turn aborted,remaining=%ld\n", static_cast<long>(gTurnLeft));
+  }
+  gTurnLeft = 0;
+  gTurnFrac = 0.0f;
+}
+
+bool* benchField(const char* n, int* index) {
+  bool* const fields[6] = {&gBench.forward, &gBench.back, &gBench.left,
+                           &gBench.right,   &gBench.jump, &gBench.use};
+  static const char* const names[6] = {"w", "s", "a", "d", "jump", "use"};
+  for (int i = 0; i < 6; ++i) {
+    if (!strcmp(n, names[i])) {
+      *index = i;
+      return fields[i];
+    }
+  }
+  return 0;
+}
+
+// act <w|a|s|d|jump|use> <0|1|ms>  |  act clear
+// 1 holds until "act x 0"; a value >= 2 holds for that many ms.
+void handleAct(int argc, char** argv) {
+  if (!strcmp(argv[1], "clear")) {
+    gBench = noGameIntent();
+    memset(gActUntilUs, 0, sizeof(gActUntilUs));
+    emit("#OK,act clear\n");
+    return;
+  }
+  int index = 0;
+  bool* field = argc == 3 ? benchField(argv[1], &index) : 0;
+  if (!field) {
+    emit("#ERR,act <w|a|s|d|jump|use> <0|1|ms> or act clear\n");
+    return;
+  }
+  const long v = strtol(argv[2], 0, 10);
+  if (v != 0 && gLook.state() != LOOK_ACTIVE) {
+    emit("#ERR,act needs ACTIVE\n");
+    return;
+  }
+  *field = v != 0;
+  gActUntilUs[index] = v >= 2 ? nowUs() + static_cast<uint64_t>(v) * 1000U : 0;
+  emitf("#OK,act %s=%ld\n", argv[1], v);
+}
+
+void expireBenchActions(uint64_t t) {
+  int index = 0;
+  static const char* const names[6] = {"w", "s", "a", "d", "jump", "use"};
+  for (int i = 0; i < 6; ++i) {
+    if (gActUntilUs[i] != 0 && t >= gActUntilUs[i]) {
+      gActUntilUs[i] = 0;
+      *benchField(names[i], &index) = false;
+    }
+  }
+}
+
+// turn <counts> [rate_cps]: sends exactly <counts> mouse X counts (head look
+// paused meanwhile). Used to measure Minecraft's degrees per count and to
+// check that slow and fast turns of equal counts give equal angles.
+void startTurn(int argc, char** argv) {
+  const long counts = strtol(argv[1], 0, 10);
+  const float rate = argc >= 3 ? strtof(argv[2], 0) : 400.0f;
+  if (gLook.state() != LOOK_ACTIVE) {
+    emit("#ERR,turn needs ACTIVE\n");
+  } else if (counts == 0 || counts > 20000 || counts < -20000 || rate < 10.0f ||
+             rate > 5000.0f) {
+    emit("#ERR,turn <counts 1..20000, signed> [rate 10..5000 cps]\n");
+  } else {
+    gTurnLeft = gTurnTotal = static_cast<int32_t>(counts);
+    gTurnRateCps = rate;
+    gTurnFrac = 0.0f;
+    emitf("#OK,turn %ld @ %.0f cps\n", counts, rate);
+  }
+}
+
+// #K line whenever the committed keyboard/button state changes.
+void logGameOutput(uint64_t t) {
+  const uint8_t* keys = gGame.committedKeys();
+  const uint8_t buttons = gGame.committedButtons();
+  if (!memcmp(keys, gLoggedKeys, 6) && buttons == gLoggedButtons) return;
+  memcpy(gLoggedKeys, keys, 6);
+  gLoggedButtons = buttons;
+  char names[48] = "";
+  for (int i = 0; i < 6 && keys[i]; ++i) {
+    const char* n = keys[i] == mc::kKeyForward ? "W"
+                    : keys[i] == mc::kKeyBack  ? "S"
+                    : keys[i] == mc::kKeyLeft  ? "A"
+                    : keys[i] == mc::kKeyRight ? "D"
+                    : keys[i] == mc::kKeyJump  ? "SPACE"
+                                               : "?";
+    if (names[0]) strncat(names, "+", sizeof(names) - strlen(names) - 1);
+    strncat(names, n, sizeof(names) - strlen(names) - 1);
+  }
+  emitf("#K,%lu,keys=%s,right=%u,hid=%u\n", static_cast<unsigned long>(t / 1000U),
+        names[0] ? names : "-", (buttons & mc::kButtonUse) ? 1U : 0U,
+        gHidEnabled ? 1U : 0U);
+}
+
+// chan <joy|breath|bite> <0|1>: lets one build run with or without each
+// sensor. Any change disarms; the channel restarts its calibration/grace.
+void setChannel(const char* name, bool on) {
+  const uint64_t t = nowUs();
+  if (!strcmp(name, "joy")) {
+    gUseJoy = on;
+    gSpanUntilUs = 0;
+  } else if (!strcmp(name, "breath")) {
+    gUseBreath = on;
+    gBreath.reset();
+    gBreathSinceUs = t;
+  } else if (!strcmp(name, "bite")) {
+    gUseBite = on;
+    gBite.reset();
+    gBiteSinceUs = t;
+  } else {
+    emit("#ERR,chan <joy|breath|bite> <0|1>\n");
+    return;
+  }
+  if (gLook.state() != LOOK_DISARMED && gLook.state() != LOOK_FAULT) {
+    gLook.requestDisarm();
+  }
+  printChannels();
+}
+
+void startSpanCapture() {
+  if (!gUseJoy || gLook.state() != LOOK_DISARMED) {
+    emit("#ERR,jspan needs joy=1 and DISARMED\n");
+    return;
+  }
+  gJoy.beginSpanCapture();
+  gSpanUntilUs = nowUs() + cfg::kJoySpanCaptureUs;
+  emit("#OK,jspan: keep released now, then push all 4 directions to the "
+       "comfortable limit within 6 s\n");
+}
+
 void handleCommand(char* line) {
   char* argv[4] = {0, 0, 0, 0};
   int argc = 0;
@@ -148,6 +372,10 @@ void handleCommand(char* line) {
   if (argc == 0) return;
   const char* c = argv[0];
   if (!strcmp(c, "arm")) {
+    if (gSpanUntilUs != 0) {
+      emit("#ERR,arm: jspan running\n");
+      return;
+    }
     gLook.requestArm();
     emit("#OK,arm\n");
   } else if (!strcmp(c, "disarm") || !strcmp(c, "x")) {
@@ -158,8 +386,30 @@ void handleCommand(char* line) {
     emit("#OK,ack\n");
   } else if (!strcmp(c, "hid") && argc == 2) {
     gHidEnabled = atoi(argv[1]) != 0;
-    if (!gHidEnabled) gHid.requestReleaseAll();
+    gHid.requestReleaseAll();  // real host goes neutral either way
+    clearBenchActions();
+    gGame.releaseAll();        // committed state restarts from neutral
     emitf("#OK,hid=%u\n", gHidEnabled ? 1U : 0U);
+  } else if (!strcmp(c, "chan") && argc == 3) {
+    setChannel(argv[1], atoi(argv[2]) != 0);
+  } else if (!strcmp(c, "jspan")) {
+    startSpanCapture();
+  } else if (!strcmp(c, "act") && argc >= 2) {
+    handleAct(argc, argv);
+  } else if (!strcmp(c, "tap") && argc == 2) {
+    if (gLook.state() != LOOK_ACTIVE) {
+      emit("#ERR,tap needs ACTIVE\n");
+    } else if (!strcmp(argv[1], "jump")) {
+      gTapJump = true;
+      emit("#OK,tap jump\n");
+    } else if (!strcmp(argv[1], "use")) {
+      gTapUse = true;
+      emit("#OK,tap use\n");
+    } else {
+      emit("#ERR,tap jump|use\n");
+    }
+  } else if (!strcmp(c, "turn") && argc >= 2) {
+    startTurn(argc, argv);
   } else if (!strcmp(c, "set") && argc == 3) {
     if (setParam(argv[1], argv[2])) {
       printParams();
@@ -177,6 +427,7 @@ void handleCommand(char* line) {
   } else if (!strcmp(c, "get")) {
     printIdentity();
     printParams();
+    printChannels();
     printCalibration();
     printHeader();
   } else {
@@ -230,7 +481,82 @@ void writeTelemetry(uint64_t t, const LookTick& k) {
   gLineEvent = 0;
 }
 
+int readAdcAverage(uint8_t pin) {
+  analogRead(pin);  // discard the first sample after switching channel
+  long total = 0;
+  for (int i = 0; i < cfg::kJoyAdcAverage; ++i) total += analogRead(pin);
+  return static_cast<int>(total / cfg::kJoyAdcAverage);
+}
+
+// Step 2 of the loop: joystick ADC, and whichever HX710B has OUT low.
+void readChannels(uint64_t t) {
+  if (gUseJoy) {
+    gJoyRaw[0] = readAdcAverage(cfg::kPinJoyX);
+    gJoyRaw[1] = readAdcAverage(cfg::kPinJoyY);
+    gJoy.update(static_cast<float>(gJoyRaw[0]), static_cast<float>(gJoyRaw[1]),
+                gLoopDtUs);
+    if (gSpanUntilUs != 0 && t >= gSpanUntilUs) {
+      gSpanUntilUs = 0;
+      const bool ok = gJoy.finishSpanCapture();
+      emitf("#E,%lu,%s,%s\n", static_cast<unsigned long>(t / 1000U),
+            ok ? "jspan_done" : "jspan_partial", lookStateName(gLook.state()));
+      printChannels();
+    }
+  }
+  uint32_t bits = 0;
+  if (gUseBreath && gBreathHx.tryRead(&bits)) {
+    gBreath.addSample(t, hx710bToSigned(bits));
+  }
+  if (gUseBite && gBiteHx.tryRead(&bits)) {
+    gBite.addSample(t, hx710bToSigned(bits));
+  }
+}
+
+// Step 3: a pressure channel that stops converting latches FAULT.
+void checkPressureFresh(const PressureChannel& c, bool use, uint64_t since,
+                        const char* fault, uint64_t t) {
+  if (!use || gLook.state() == LOOK_FAULT) return;
+  const bool fresh = c.hasSample() && c.lastSampleUs() >= since;
+  const uint64_t ref = fresh ? c.lastSampleUs() : since;
+  const uint32_t limit = fresh ? cfg::kPressureTimeoutUs : cfg::kPressureGraceUs;
+  if (t > ref && t - ref > limit) gLook.reportFault(fault);
+}
+
+bool otherInputsNeutral() {
+  return (!gUseJoy || gJoy.neutral()) && (!gUseBreath || gBreath.neutral()) &&
+         (!gUseBite || gBite.neutral());
+}
+
+void writeSensorLine(uint64_t t) {
+  if (t < gNextSensorUs) return;
+  gNextSensorUs = t + 1000000U / cfg::kSensorLineHz;
+  char keys[6] = "";
+  int n = 0;
+  if (gJoy.forward()) keys[n++] = 'W';
+  if (gJoy.back()) keys[n++] = 'S';
+  if (gJoy.left()) keys[n++] = 'A';
+  if (gJoy.right()) keys[n++] = 'D';
+  keys[n] = '\0';
+  const uint32_t ageMs =
+      gBreath.hasSample() ? static_cast<uint32_t>((t - gBreath.lastSampleUs()) / 1000U)
+                          : 0xFFFFU;
+  emitf("S,%lu,%d,%d,%.3f,%.3f,%s,%ld,%ld,%ld,%u,%u,%ld,%ld,%ld,%u,%lu\n",
+        static_cast<unsigned long>(t / 1000U), gJoyRaw[0], gJoyRaw[1],
+        gJoy.norm(0), gJoy.norm(1), n ? keys : "-",
+        static_cast<long>(gBreath.raw()), static_cast<long>(gBreath.baseline()),
+        static_cast<long>(gBreath.pressure()), gBreath.active() ? 1U : 0U,
+        gBreath.sip() ? 1U : 0U, static_cast<long>(gBite.raw()),
+        static_cast<long>(gBite.baseline()), static_cast<long>(gBite.pressure()),
+        gBite.active() ? 1U : 0U, static_cast<unsigned long>(ageMs));
+}
+
 void controlTick(uint64_t t) {
+  // USB (re)enumeration or resume: host key state is unknown, stay DISARMED.
+  if (gHid.remounted()) {
+    if (gLook.state() != LOOK_DISARMED) gLook.requestDisarm();
+    gGame.releaseAll();
+  }
+
   // 1. Read inputs.
   ImuInput in;
   in.fresh = false;
@@ -244,6 +570,27 @@ void controlTick(uint64_t t) {
   } else if (pr == ImuReader::POLL_ERROR) {
     ++gImuReadErrors;
   }
+
+  readChannels(t);
+
+  // 3. Validate: pressure freshness.
+  checkPressureFresh(gBreath, gUseBreath, gBreathSinceUs, "fault_breath_timeout", t);
+  checkPressureFresh(gBite, gUseBite, gBiteSinceUs, "fault_bite_timeout", t);
+
+  // 4. Disarm first: a sip held >= 150 ms (once per sip).
+  if (gUseBreath && cfg::kSipDisarms &&
+      gBreath.sipHeldUs(t) >= cfg::kSipDisarmUs) {
+    const LookState s = gLook.state();
+    if (!gSipFired && s != LOOK_DISARMED && s != LOOK_FAULT) {
+      gLook.requestDisarm();
+      emitf("#E,%lu,sip_disarm,%s\n", static_cast<unsigned long>(t / 1000U),
+            lookStateName(s));
+    }
+    gSipFired = true;
+  } else if (!gBreath.sip()) {
+    gSipFired = false;
+  }
+  gLook.setOtherInputsNeutral(otherInputsNeutral());
 
   // Caregiver switch toggle (open -> closed) acknowledges FAULT.
   const bool enable = enableInputClosed();
@@ -264,42 +611,110 @@ void controlTick(uint64_t t) {
     if (!strcmp(k.event, "cal_done") || !strncmp(k.event, "fail", 4)) {
       printCalibration();
     }
+    // Channel calibration rides on the same 3 s still window.
+    if (!strcmp(k.event, "cal_start")) {
+      gJoy.beginCenter();
+      gBreath.reset();
+      gBite.reset();
+    } else if (!strcmp(k.event, "cal_done")) {
+      const char* fail = 0;
+      if (gUseJoy && !gJoy.finishCenter()) fail = "fail_joystick_center";
+      else if (gUseBreath && !gBreath.seeded()) fail = "fail_breath_baseline";
+      else if (gUseBite && !gBite.seeded()) fail = "fail_bite_baseline";
+      if (fail) {
+        gLook.requestDisarm();
+        emitf("#E,%lu,%s,%s\n", static_cast<unsigned long>(t / 1000U), fail,
+              lookStateName(k.state));
+      }
+      printChannels();
+    }
   }
   if (k.releaseAll) {
-    gHid.requestReleaseAll();
+    gGame.releaseAll();
+    clearBenchActions();
     gAccX.clear();
     gAccY.clear();
   }
 
-  // 5-6. Output: velocity -> integer deltas over the real loop interval.
+  // 5. Channels -> desired output. Velocity -> integer deltas over the real
+  // loop interval; game actions -> GameInput (bench: serial act/tap).
   const bool active = (k.state == LOOK_ACTIVE);
-  if (active) {
-    const float dt = gLoopDtUs * 1e-6f;
+  const float dt = gLoopDtUs * 1e-6f;
+  const bool turning = active && gTurnLeft != 0;
+  if (active && !turning) {
     gAccX.add(k.velocity.vxCps, dt);
     gAccY.add(k.velocity.vyCps, dt);
   } else {
     gAccX.clear();
     gAccY.clear();
   }
-  const int8_t dx = gAccX.peek();
-  const int8_t dy = gAccY.peek();
+  int8_t dx = gAccX.peek();
+  int8_t dy = gAccY.peek();
+  if (turning) {
+    gTurnFrac += gTurnRateCps * dt;
+    if (gTurnFrac > 127.0f) gTurnFrac = 127.0f;
+    const int32_t left = gTurnLeft < 0 ? -gTurnLeft : gTurnLeft;
+    int32_t step = static_cast<int32_t>(gTurnFrac);
+    if (step > left) step = left;
+    dx = static_cast<int8_t>(gTurnLeft < 0 ? -step : step);
+    dy = 0;
+  }
+
+  expireBenchActions(t);
+  GameIntent intent = gBench;
+  if (gUseJoy) {
+    intent.forward = intent.forward || gJoy.forward();
+    intent.back = intent.back || gJoy.back();
+    intent.left = intent.left || gJoy.left();
+    intent.right = intent.right || gJoy.right();
+  }
+  if (gUseBreath) intent.use = intent.use || gBreath.active();
+  if (gUseBite) intent.jump = intent.jump || gBite.active();
+  intent.jump = intent.jump || gTapJump;
+  intent.use = intent.use || gTapUse;
+  gTapJump = gTapUse = false;
+  gGame.update(t, intent, active);
+
+  // 6. One report per loop: pending hardware release first, then GameInput's
+  // plan. With HID off the plan is committed virtually for the demo page.
   int8_t sentX = 0, sentY = 0;
-  if (gHidEnabled) {
-    gHid.service(active, dx, dy, &sentX, &sentY);
-  } else {
-    gHid.service(false, 0, 0, &sentX, &sentY);  // still flush releases
-    if (active) {
-      sentX = dx;  // virtual output for the demo page
-      sentY = dy;
+  if (!gHid.flushRelease()) {
+    const HidPlan p = gGame.plan(dx, dy);
+    bool ok = false;
+    if (p.slot != HID_NONE) {
+      if (!gHidEnabled) {
+        ok = true;
+      } else if (p.slot == HID_KEYBOARD) {
+        ok = gHid.sendKeyboard(p.modifier, p.keys);
+      } else {
+        ok = gHid.sendMouse(p.buttons, p.dx, p.dy);
+      }
+    }
+    if (ok) {
+      gGame.committed(p, t);
+      if (p.slot == HID_MOUSE) {
+        sentX = p.dx;
+        sentY = p.dy;
+      }
+      logGameOutput(t);
     }
   }
-  gAccX.commit(sentX);
-  gAccY.commit(sentY);
+  if (turning) {
+    gTurnFrac -= sentX < 0 ? -sentX : sentX;
+    gTurnLeft -= sentX;
+    if (gTurnLeft == 0) {
+      emitf("#OK,turn done,counts=%ld\n", static_cast<long>(gTurnTotal));
+    }
+  } else {
+    gAccX.commit(sentX);
+    gAccY.commit(sentY);
+  }
   gDxSum += sentX;
   gDySum += sentY;
 
   // 7. Log.
   writeTelemetry(t, k);
+  writeSensorLine(t);
 }
 
 }  // namespace
@@ -326,10 +741,21 @@ void appSetup() {
   p.saturationDeg = cfg::kSaturationDeg;
   gLook.setLookParams(p);
 
+  // Joystick ADC: [Z] section 6 start configuration (12-bit, 3.6 V range).
+  analogReadResolution(12);
+  analogReference(AR_INTERNAL);
+  analogSampleTime(40);
+  analogCalibrateOffset();
+  gBite.setParams(defaultBiteParams());
+  gBreathHx.begin();
+  gBiteHx.begin();
+
   if (!gImu.begin()) {
     gLook.reportFault("fault_imu_init");
   }
   const uint64_t t = nowUs();
+  gBreathSinceUs = t;
+  gBiteSinceUs = t;
   gNextTickUs = t;
   gLastTickUs = t;
 }
@@ -341,6 +767,7 @@ void appLoop() {
   if (open && !gSerialWasOpen) {
     printIdentity();
     printParams();
+    printChannels();
     printHeader();
   }
   gSerialWasOpen = open;

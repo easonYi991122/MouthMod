@@ -2,6 +2,7 @@
 
 #include <Adafruit_TinyUSB.h>
 #include <Arduino.h>
+#include <string.h>
 
 namespace {
 enum { RID_KEYBOARD = 1, RID_MOUSE = 2 };
@@ -29,23 +30,24 @@ bool HidOutput::mounted() const {
   return TinyUSBDevice.mounted() && !TinyUSBDevice.suspended();
 }
 
+bool HidOutput::ready() const { return mounted() && gHid.ready(); }
+
+bool HidOutput::remounted() {
+  const bool isMounted = mounted();
+  const bool rising = isMounted && !wasMounted_;
+  wasMounted_ = isMounted;
+  if (rising) requestReleaseAll();  // (re)connect: neutral reports first
+  return rising;
+}
+
 void HidOutput::requestReleaseAll() {
   kbReleasePending_ = true;
   mouseReleasePending_ = true;
 }
 
-bool HidOutput::service(bool allowMotion, int8_t dx, int8_t dy, int8_t* sentDx,
-                        int8_t* sentDy) {
-  *sentDx = 0;
-  *sentDy = 0;
-  const bool isMounted = mounted();
-  if (isMounted && !wasMounted_) {
-    requestReleaseAll();  // (re)connect: neutral reports first
-  }
-  wasMounted_ = isMounted;
-  if (!isMounted || !gHid.ready()) {
-    return false;
-  }
+bool HidOutput::flushRelease() {
+  if (!releasePending()) return false;
+  if (!ready()) return true;
   // One report per loop: both report IDs share the IN endpoint.
   if (kbReleasePending_) {
     if (gHid.keyboardRelease(RID_KEYBOARD)) {
@@ -53,24 +55,32 @@ bool HidOutput::service(bool allowMotion, int8_t dx, int8_t dy, int8_t* sentDx,
     } else {
       ++sendFailures_;
     }
-    return false;
+    return true;
   }
-  if (mouseReleasePending_) {
-    if (gHid.mouseReport(RID_MOUSE, 0, 0, 0, 0, 0)) {
-      mouseReleasePending_ = false;
-    } else {
-      ++sendFailures_;
-    }
-    return false;
+  if (gHid.mouseReport(RID_MOUSE, 0, 0, 0, 0, 0)) {
+    mouseReleasePending_ = false;
+  } else {
+    ++sendFailures_;
   }
-  if (!allowMotion || (dx == 0 && dy == 0)) {
-    return false;
-  }
-  if (!gHid.mouseReport(RID_MOUSE, 0, dx, dy, 0, 0)) {
+  return true;
+}
+
+bool HidOutput::sendKeyboard(uint8_t modifier, const uint8_t keys[6]) {
+  if (!ready()) return false;
+  uint8_t k[6];
+  memcpy(k, keys, sizeof(k));
+  if (!gHid.keyboardReport(RID_KEYBOARD, modifier, k)) {
     ++sendFailures_;
     return false;
   }
-  *sentDx = dx;
-  *sentDy = dy;
+  return true;
+}
+
+bool HidOutput::sendMouse(uint8_t buttons, int8_t dx, int8_t dy) {
+  if (!ready()) return false;
+  if (!gHid.mouseReport(RID_MOUSE, buttons, dx, dy, 0, 0)) {
+    ++sendFailures_;
+    return false;
+  }
   return true;
 }

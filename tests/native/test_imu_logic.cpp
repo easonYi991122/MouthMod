@@ -315,6 +315,23 @@ void test_controller_neutral_gate() {
   assert(k.state == LOOK_ACTIVE);
 }
 
+void test_controller_neutral_gate_waits_for_other_inputs() {
+  Sim s;
+  s.c.requestArm();
+  s.step(0, 0);
+  s.runStill(305);
+  assert(s.c.state() == LOOK_WAIT_NEUTRAL);
+  // Head neutral but the joystick / a pressure channel is not: wait.
+  s.c.setOtherInputsNeutral(false);
+  LookTick k = s.runStill(100, 0, 0);
+  assert(k.state == LOOK_WAIT_NEUTRAL);
+  s.c.setOtherInputsNeutral(true);
+  k = s.runStill(25, 0, 0);
+  assert(k.state == LOOK_WAIT_NEUTRAL);  // the 300 ms restarts
+  k = s.runStill(10, 0, 0);
+  assert(k.state == LOOK_ACTIVE);
+}
+
 void test_controller_disarm_sources_release_all() {
   Sim s;
   arm_to_active(&s);
@@ -390,6 +407,9 @@ void test_monotonic_clock() {
 
 }  // namespace
 
+void run_game_input_tests();  // test_game_input.cpp
+void run_channel_tests();     // test_channels.cpp
+
 int main() {
   test_parse_axis();
   test_mount_frame();
@@ -404,11 +424,14 @@ int main() {
   test_controller_powerup_disarmed_no_output();
   test_controller_full_arm_flow_and_mapping_sign();
   test_controller_neutral_gate();
+  test_controller_neutral_gate_waits_for_other_inputs();
   test_controller_disarm_sources_release_all();
   test_controller_fault_latch();
   test_controller_startup_without_imu_faults();
   test_controller_cal_motion_returns_disarmed();
   test_monotonic_clock();
-  std::printf("all IMU logic tests passed\n");
+  run_game_input_tests();
+  run_channel_tests();
+  std::printf("all IMU, game input and channel logic tests passed\n");
   return 0;
 }

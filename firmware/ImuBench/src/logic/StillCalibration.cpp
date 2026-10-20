@@ -6,7 +6,7 @@ StillCalibrationConfig defaultStillCalibrationConfig() {
   StillCalibrationConfig c;
   c.windowUs = 3000000U;
   c.minSamples = 250U;  // ~80 % of 104 Hz * 3 s
-  c.maxGyroStdDps = 1.0f;
+  c.maxGyroStdDps = 3.0f;  // 1.0 failed when worn/hand-held (D5)
   c.minAccelG = 0.9f;
   c.maxAccelG = 1.1f;
   return c;

@@ -70,6 +70,8 @@ textarea { width: 100%; height: 120px; background: var(--panel2); color: var(--t
 .legend { display: flex; gap: 12px; font-size: 11px; color: var(--muted); }
 .legend i { display: inline-block; width: 10px; height: 3px; margin-right: 4px; vertical-align: middle; }
 .warnbox { background: #3a2a10; border: 1px solid #6b4e1c; color: #ffd58a; padding: 6px 8px; border-radius: 6px; font-size: 12px; }
+.cmdrow { display: flex; gap: 6px; margin-top: 8px; }
+.cmdrow input { flex: 1; min-width: 0; font: inherit; padding: 4px 6px; }
 </style>
 </head>
 <body>
@@ -183,6 +185,10 @@ textarea { width: 100%; height: 120px; background: var(--panel2); color: var(--t
   <div class="charts">
     <section><h2>链路状态</h2><div class="stats" id="stats"></div></section>
     <div id="log"></div>
+    <form id="cmdForm" class="cmdrow">
+      <input id="cmdIn" placeholder="串口命令：act w 2000 · tap jump · act use 1 · turn 1000 200 · x" autocomplete="off" spellcheck="false">
+      <button type="submit">发送</button>
+    </form>
   </div>
 </div>
 </main>
@@ -368,6 +374,7 @@ const hist = [];
 let T = null;           // latest telemetry frame
 let fw = {};            // #I fields
 let lastCal = '';
+let S = null, chan = {};
 let rateCount = 0, rateHz = 0, imuNewCount = 0, imuHz = 0;
 let sentCountsWindow = { x: 0, y: 0 }, ptrCountsWindow = { x: 0, y: 0 };
 let deliveryText = '—';
@@ -379,6 +386,7 @@ function handleLine(line) {
   if (!line) return;
   if (rec) rec.push(line);
   if (line.startsWith('D,')) return handleData(line.split(','));
+  if (line.startsWith('S,')) { S = line.split(','); return; }
   const parts = line.split(',');
   switch (parts[0]) {
     case '#I': fw = parseKV(parts.slice(1)); log(line); break;
@@ -392,6 +400,8 @@ function handleLine(line) {
     case '#E': log('事件: ' + parts.slice(2).join(' → '), 'ev'); break;
     case '#ERR': log(line, 'err'); break;
     case '#OK': log(line, 'ok'); break;
+    case '#Q': chan = parseKV(parts.slice(1)); log('通道参数: ' + parts.slice(1).join(' ')); break;
+    case '#K': log('游戏输出: ' + parts.slice(2).join('  '), 'ev'); break;
     case '#H': break;
     default: log(line);
   }
@@ -428,6 +438,12 @@ function setBadge(state) {
 // ---------------------------------------------------------------- session buttons
 $('btnArm').onclick = () => send('arm');
 $('btnAck').onclick = () => send('ack');
+$('cmdForm').onsubmit = (e) => {
+  e.preventDefault();
+  const v = $('cmdIn').value.trim();
+  if (v) { send(v); log('> ' + v); }
+  $('cmdIn').value = '';
+};
 function disarmAll() { send('hid 0'); send('disarm'); $('chkHid').checked = false; }
 $('btnDisarmTop').onclick = disarmAll;
 document.addEventListener('keydown', (e) => {
@@ -658,6 +674,9 @@ function drawStats() {
     ['HID 实发到达率', deliveryText], ['指针原始输入', document.pointerLockElement ? (rawMovement ? '是 (unadjusted)' : '否 (受系统加速影响)') : '未锁定'],
     ['固件', fw.fw ? `${fw.fw} ${fw.ver} · BSP ${fw.bsp} · IMU ${fw.imu_ok === '1' ? 'OK' : '失败'} ${fw.whoami || ''}` : '—'],
     ['最近校准', lastCal ? lastCal.replace(/  /g, ' ') : '—'],
+    ['摇杆', chan.joy === '0' ? '关闭' : S ? `raw ${S[2]} / ${S[3]} → ${(+S[4]).toFixed(2)} / ${(+S[5]).toFixed(2)}  键 ${S[6]}` : '—'],
+    ['吹吸 #1', chan.breath === '0' ? '关闭' : S ? `p ${S[9]} (基线 ${S[8]})  吹 ${S[10]}  吸 ${S[11]}  样本年龄 ${S[16]} ms` : '—'],
+    ['咬合 #2', chan.bite === '1' && S ? `p ${S[14]} (基线 ${S[13]})  咬 ${S[15]}` : '关闭'],
   ];
   $('stats').innerHTML = rows.map(([k, v]) => `<span>${k}</span><span>${v}</span>`).join('');
   $('statusText').textContent = link ? (link.kind === 'sim' ? '模拟中：在左下方十字图上拖动 = 转头' : link.kind === 'bridge' ? '已连接（本地桥）' : '已连接（Web Serial）') : '';

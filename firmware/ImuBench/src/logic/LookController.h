@@ -74,6 +74,8 @@ class LookController {
   void requestDisarm() { disarmRequested_ = true; }
   void acknowledgeFault() { ackRequested_ = true; }
   void reportFault(const char* reason);
+  // Joystick / pressure channels neutral; WAIT_NEUTRAL needs this too.
+  void setOtherInputsNeutral(bool neutral) { otherNeutral_ = neutral; }
 
   // enableInput mirrors the caregiver switch (true when not wired).
   LookTick tick(uint64_t nowUs, const ImuInput& imu, bool enableInput);
@@ -110,6 +112,7 @@ class LookController {
   bool bootSet_;
   uint64_t neutralSinceUs_;
   bool neutralTiming_;
+  bool otherNeutral_;
 
   bool calibrated_;
   Vec3 bias_;

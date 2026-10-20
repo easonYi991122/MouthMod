@@ -16,6 +16,8 @@
 | 串口 → 本地桥 → 测试页 | ✅ 跑通 | 页面实时显示姿态、陀螺数据、状态 |
 | **倾头 → 视角动作** | ⚠️ **原因已找到，修复版待实板验证** | 校准静止阈值太严，见第 4 节；单文件版 `ImuLookMini` 已改为 3 dps |
 | 校准、真实 HID 鼠标、停用路径、延迟 | ⬜ 未测 | 按 README 第 3 节逐项记录 |
+| 摇杆、吹吸移植（v0.4.0） | ⚠️ 已接入、主机测试通过，**没有接实物测** | 组员代码的问题和改动见 docs/minecraft-education.md §3 |
+| Minecraft Education 适配（v0.3.0） | ⚠️ 已写好、主机测试通过，**未在游戏里测** | `src/logic/GameInput`，串口命令 `act/tap/turn`，见 [docs/minecraft-education.md](docs/minecraft-education.md) |
 | 遥测频率修复 | ⚠️ 只在源码里 | 原设 50 Hz，实测约 38 Hz，已修复。修复版只在本包源码和 `build/ImuBench.uf2` 里；**板子上还是修复前的版本** |
 
 ## 2. 在另一台电脑上开始
@@ -64,7 +66,7 @@ LSM6DS3TR-C (Wire1 0x6A, 104 Hz)
 **已定位的原因（2026-10-16 实板复现）：** 发送 `arm` 后，3 s 校准结束时报 `fail_motion`，状态退回 DISARMED，所以一直进不了 ACTIVE。
 当时实测的陀螺标准差为 1.30 / 1.95 / 1.11 dps，而 `ImuBench` 暂定的上限是 1.0 dps（docs/imu-decisions.md D5）。板子拿在手上或戴在头上时，自然的微动和呼吸就会超过这个值。
 - 单文件版 `firmware/ImuLookMini/ImuLookMini.ino` 已把上限改为 **3 dps**，失败时会打印实测标准差和上限。它已编译通过，**还没在实板上验证**。
-- 完整版 `ImuBench` 还是 1.0 dps：要改的话，修改 `src/logic/StillCalibration.cpp` 里的 `maxGyroStdDps`，同时更新 D5。
+- 完整版 `ImuBench` 从 v0.3.0 起也改为 3 dps（`src/logic/StillCalibration.cpp`，D5 已更新），同样还没在实板上验证。
 
 修复后如果还是不动，按下面的清单逐项排查：
 
@@ -72,7 +74,7 @@ LSM6DS3TR-C (Wire1 0x6A, 104 Hz)
 
 1. **状态是不是 ACTIVE？** 页面左上角的状态标签必须是绿色「启用 ACTIVE」。DISARMED 下所有角度照常显示，但速度恒为 0，这是设计如此。
 2. **校准有没有失败？** 点「启用」后看日志里的 `校准: status=...`：
-   - `fail_motion` 表示 3 s 内没拿稳（陀螺标准差超过 1 dps）。拿在手里很容易失败，请把板子放在桌上，或者戴好后保持静止。
+   - `fail_motion` 表示 3 s 内没拿稳（陀螺标准差超过上限，v0.3.0 起为 3 dps）。拿在手里很容易失败，请把板子放在桌上，或者戴好后保持静止。
    - `fail_accel` 表示加速度模长不在 0.9–1.1 g 之间。
 3. **是不是卡在 WAIT_NEUTRAL？** 校准结束后，头要回到校准时的姿势（两轴误差都小于 3°）并保持 300 ms，才会进入 ACTIVE。
 4. **倾斜角度够不够？** 小于 3° 不会动。ACTIVE 时右下方曲线图里的 vx/vy 应该随倾斜变成非零，左下方十字图中的圆点会变绿。

@@ -9,7 +9,7 @@ namespace cfg {
 
 // --- Build / identity ---
 static const char* const kFirmwareName = "MouthMod-ImuBench";
-static const char* const kFirmwareVersion = "0.1.0";
+static const char* const kFirmwareVersion = "0.4.0";
 
 // --- Loop ---
 static const uint32_t kLoopPeriodUs = 10000;  // 100 Hz, non-blocking (frozen)
@@ -49,10 +49,33 @@ static const bool kHidEnabledAtBoot = false;
 // Watchdog is not started in the bench build (guide section f, step 1).
 static const bool kWatchdogStarted = false;
 
+// --- Tongue joystick (pots on 3V3 only; A0 = X wiper, A1 = Y wiper) ---
+// Runtime: "chan joy 0|1". Thresholds/spans: logic/JoystickMapper.cpp.
+static const bool kUseJoystick = true;
+static const uint8_t kPinJoyX = 0;            // A0/D0 (frozen pin)
+static const uint8_t kPinJoyY = 1;            // A1/D1 (frozen pin)
+static const uint8_t kJoyAdcAverage = 4;      // samples per read (as the port)
+static const uint32_t kJoySpanCaptureUs = 6000000;  // "jspan" window
+
+// --- Pressure modules (HX710B, 27 pulses = 40 Hz) ---
+// #1 breath (puff = right button, sip = disarm), #2 bite (Space). Runtime:
+// "chan breath 0|1", "chan bite 0|1". Thresholds: logic/PressureChannel.cpp.
+static const bool kUseBreath = true;
+static const bool kUseBite = false;           // no bite hardware code yet
+static const uint8_t kPinBreathOut = 2;       // D2 (frozen pin)
+static const uint8_t kPinBreathSck = 3;       // D3
+static const uint8_t kPinBiteOut = 4;         // D4
+static const uint8_t kPinBiteSck = 5;         // D5
+static const uint32_t kPressureTimeoutUs = 250000;   // provisional (port: 350 ms)
+static const uint32_t kPressureGraceUs = 1000000;    // after boot / enable
+static const bool kSipDisarms = true;
+static const uint32_t kSipDisarmUs = 150000;  // frozen start point
+
 // --- Logging ---
 // USB CDC ignores baud, but never use 1200 (it triggers the bootloader).
 static const uint32_t kSerialBaud = 115200;
 static const uint16_t kDefaultTelemetryHz = 50;
+static const uint16_t kSensorLineHz = 20;     // "S," channel lines
 
 }  // namespace cfg
 

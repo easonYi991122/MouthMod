@@ -31,6 +31,7 @@ LookController::LookController()
       bootSet_(false),
       neutralSinceUs_(0U),
       neutralTiming_(false),
+      otherNeutral_(true),
       calibrated_(false),
       bias_(makeVec3(0.0f, 0.0f, 0.0f)),
       roll0_(0.0f),
@@ -179,8 +180,8 @@ LookTick LookController::tick(uint64_t nowUs, const ImuInput& imu,
 
   if (state_ == LOOK_WAIT_NEUTRAL) {
     const float edge = LookAxis::engageEdge(mapper_.params());
-    const bool neutral =
-        fabsf(out.rollErrDeg) < edge && fabsf(out.pitchErrDeg) < edge;
+    const bool neutral = otherNeutral_ && fabsf(out.rollErrDeg) < edge &&
+                         fabsf(out.pitchErrDeg) < edge;
     if (!neutral) {
       neutralTiming_ = false;
     } else if (!neutralTiming_) {
