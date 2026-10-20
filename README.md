@@ -106,6 +106,7 @@ python3 tools/look_demo/bridge.py   # 在仓库根目录运行
 | `act <w\|a\|s\|d\|jump\|use> <0\|1\|ms>` | 仅 ACTIVE 时可用：模拟摇杆、咬合、吹气的电平。`1` 表示一直保持，直到发 `0`；≥2 表示保持这么多毫秒；`act clear` 全部清除 |
 | `tap jump\|use` | 仅 ACTIVE 时可用：一次很短的咬合或吹气，用来检查 60 ms 最短按住 |
 | `chan <joy\|breath\|bite> <0\|1>` | 打开或关闭某个通道（默认摇杆、吹吸打开，咬合关闭）。没接的传感器要先关掉；切换后会停用 |
+| `hang` | 仅在看门狗开启时可用：让主循环卡死，用来测试看门狗复位（复位后应为 DISARMED，`#I` 里 `reset=watchdog`） |
 | `jspan` | 仅 DISARMED 时可用：先保持松杆，再在 6 s 内把四个方向各推到舒适的极限，记录每人的摇杆行程 |
 | `set <jon\|joff\|jswap\|jinvx\|jinvy> <v>` | 摇杆的触发/释放阈值（按跨度归一化）、交换轴、反转方向 |
 | `set <bsign\|bon\|boff\|son\|soff\|brel> <v>` | 吹吸：符号（±1）、吹气触发/释放、吸气触发/释放（counts）、释放延迟（ms）。`ksign/kon/koff` 对应咬合 |

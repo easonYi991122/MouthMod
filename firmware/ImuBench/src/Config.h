@@ -9,7 +9,7 @@ namespace cfg {
 
 // --- Build / identity ---
 static const char* const kFirmwareName = "MouthMod-ImuBench";
-static const char* const kFirmwareVersion = "0.4.0";
+static const char* const kFirmwareVersion = "0.5.0";
 
 // --- Loop ---
 static const uint32_t kLoopPeriodUs = 10000;  // 100 Hz, non-blocking (frozen)
@@ -47,7 +47,10 @@ static const bool kDisarmOnSerialClose = true;
 // Real HID mouse output starts disabled; enable with "hid 1".
 static const bool kHidEnabledAtBoot = false;
 // Watchdog is not started in the bench build (guide section f, step 1).
+// Before turning it on: check that upload / double-tap DFU still works with
+// it running (the WDT survives a soft reset into the bootloader).
 static const bool kWatchdogStarted = false;
+static const uint32_t kWatchdogTimeoutMs = 500;  // frozen start point
 
 // --- Tongue joystick (pots on 3V3 only; A0 = X wiper, A1 = Y wiper) ---
 // Runtime: "chan joy 0|1". Thresholds/spans: logic/JoystickMapper.cpp.
@@ -70,6 +73,11 @@ static const uint32_t kPressureTimeoutUs = 250000;   // provisional (port: 350 m
 static const uint32_t kPressureGraceUs = 1000000;    // after boot / enable
 static const bool kSipDisarms = true;
 static const uint32_t kSipDisarmUs = 150000;  // frozen start point
+// Long sip arms ([Z] section 6): DISARMED + D6 closed + sip >= 1 s. The
+// serial "arm" stays as the bench fallback. With kDisarmOnSerialClose the
+// enable input also needs the serial port open.
+static const bool kSipArms = true;
+static const uint32_t kSipArmUs = 1000000;    // frozen start point
 
 // --- Logging ---
 // USB CDC ignores baud, but never use 1200 (it triggers the bootloader).

@@ -16,6 +16,7 @@
 | 串口 → 本地桥 → 测试页 | ✅ 跑通 | 页面实时显示姿态、陀螺数据、状态 |
 | **倾头 → 视角动作** | ⚠️ **原因已找到，修复版待实板验证** | 校准静止阈值太严，见第 4 节；单文件版 `ImuLookMini` 已改为 3 dps |
 | 校准、真实 HID 鼠标、停用路径、延迟 | ⬜ 未测 | 按 README 第 3 节逐项记录 |
+| 长吸启用、看门狗（v0.5.0） | ⚠️ 已写好、主机测试通过，**没有实测**；看门狗默认关闭 | decisions D25、D26 |
 | 摇杆、吹吸移植（v0.4.0） | ⚠️ 已接入、主机测试通过，**没有接实物测** | 组员代码的问题和改动见 docs/minecraft-education.md §3 |
 | Minecraft Education 适配（v0.3.0） | ⚠️ 已写好、主机测试通过，**未在游戏里测** | `src/logic/GameInput`，串口命令 `act/tap/turn`，见 [docs/minecraft-education.md](docs/minecraft-education.md) |
 | 遥测频率修复 | ⚠️ 只在源码里 | 原设 50 Hz，实测约 38 Hz，已修复。修复版只在本包源码和 `build/ImuBench.uf2` 里；**板子上还是修复前的版本** |

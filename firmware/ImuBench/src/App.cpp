@@ -11,12 +11,14 @@
 #include "hardware/HidOutput.h"
 #include "hardware/Hx710b.h"
 #include "hardware/ImuReader.h"
+#include "hardware/Watchdog.h"
 #include "logic/GameInput.h"
 #include "logic/JoystickMapper.h"
 #include "logic/LookController.h"
 #include "logic/MonotonicClock.h"
 #include "logic/MouseLookMapper.h"
 #include "logic/PressureChannel.h"
+#include "logic/SipArmGate.h"
 
 namespace {
 
@@ -41,6 +43,9 @@ uint64_t gBreathSinceUs = 0;  // enable time, starts the startup grace
 uint64_t gBiteSinceUs = 0;
 uint64_t gSpanUntilUs = 0;    // "jspan" capture end; 0 = idle
 bool gSipFired = false;
+SipArmGate gSipArm(cfg::kSipArmUs);
+Watchdog gWdt;
+uint32_t gResetReason = 0;
 int gJoyRaw[2] = {0, 0};
 uint64_t gNextSensorUs = 0;
 
@@ -147,11 +152,13 @@ void printParams() {
 
 void printIdentity() {
   emitf("#I,fw=%s,ver=%s,bsp=%s,imu_ok=%u,whoami=0x%02X,odr=%u,acc_g=%u,"
-        "gyro_dps=%u,d6_enable=%u,wdt=%u,max_loop_dt_us=%lu\n",
+        "gyro_dps=%u,d6_enable=%u,wdt=%u,reset=%s/0x%lx,sip_arm=%u,"
+        "max_loop_dt_us=%lu\n",
         cfg::kFirmwareName, cfg::kFirmwareVersion, ARDUINO_BSP_VERSION,
         gImu.ok() ? 1U : 0U, gImu.whoAmI(), cfg::kImuOdrHz, cfg::kAccelRangeG,
         cfg::kGyroRangeDps, cfg::kUseD6Enable ? 1U : 0U,
-        cfg::kWatchdogStarted ? 1U : 0U,
+        gWdt.running() ? 1U : 0U, Watchdog::resetReasonName(gResetReason),
+        static_cast<unsigned long>(gResetReason), cfg::kSipArms ? 1U : 0U,
         static_cast<unsigned long>(gMaxLoopDtUs));
 }
 
@@ -392,6 +399,17 @@ void handleCommand(char* line) {
     emitf("#OK,hid=%u\n", gHidEnabled ? 1U : 0U);
   } else if (!strcmp(c, "chan") && argc == 3) {
     setChannel(argv[1], atoi(argv[2]) != 0);
+  } else if (!strcmp(c, "hang")) {
+    // Fault injection for the watchdog test: stop feeding, expect a reset
+    // that comes back DISARMED with reset=watchdog in #I.
+    if (!gWdt.running()) {
+      emit("#ERR,hang needs the watchdog running (cfg::kWatchdogStarted)\n");
+    } else {
+      emit("#OK,hang: loop stopped, expect watchdog reset\n");
+      Serial.flush();
+      while (true) {
+      }
+    }
   } else if (!strcmp(c, "jspan")) {
     startSpanCapture();
   } else if (!strcmp(c, "act") && argc >= 2) {
@@ -592,6 +610,20 @@ void controlTick(uint64_t t) {
   }
   gLook.setOtherInputsNeutral(otherInputsNeutral());
 
+  // Arm: DISARMED + D6 closed + a sip that started while DISARMED, >= 1 s.
+  if (gUseBreath && cfg::kSipArms && gBreath.seeded()) {
+    const bool disarmed = gLook.state() == LOOK_DISARMED && gSpanUntilUs == 0;
+    if (gSipArm.update(disarmed, enableInputClosed(), gBreath.sip(),
+                       gBreath.sipHeldUs(t))) {
+      gLook.requestArm();
+      emitf("#E,%lu,sip_arm,%s\n", static_cast<unsigned long>(t / 1000U),
+            lookStateName(gLook.state()));
+    }
+  }
+
+  // Validation done: feed the watchdog (never from a timer).
+  gWdt.feed();
+
   // Caregiver switch toggle (open -> closed) acknowledges FAULT.
   const bool enable = enableInputClosed();
   if (cfg::kUseD6Enable) {
@@ -614,8 +646,10 @@ void controlTick(uint64_t t) {
     // Channel calibration rides on the same 3 s still window.
     if (!strcmp(k.event, "cal_start")) {
       gJoy.beginCenter();
-      gBreath.reset();
-      gBite.reset();
+      // After a long-sip arm the sip is still on: keep the tracked baseline
+      // (it is frozen during the sip) instead of seeding from sip pressure.
+      if (!gBreath.seeded() || gBreath.neutral()) gBreath.reset();
+      if (!gBite.seeded() || gBite.neutral()) gBite.reset();
     } else if (!strcmp(k.event, "cal_done")) {
       const char* fail = 0;
       if (gUseJoy && !gJoy.finishCenter()) fail = "fail_joystick_center";
@@ -720,6 +754,7 @@ void controlTick(uint64_t t) {
 }  // namespace
 
 void appSetup() {
+  gResetReason = Watchdog::captureResetReason();
   gHid.begin();  // HID interface must be registered before enumeration
   Serial.begin(cfg::kSerialBaud);  // no while(!Serial): run without a host
   if (cfg::kUseD6Enable) pinMode(cfg::kPinEnable, INPUT_PULLUP);
@@ -753,6 +788,7 @@ void appSetup() {
   if (!gImu.begin()) {
     gLook.reportFault("fault_imu_init");
   }
+  if (cfg::kWatchdogStarted) gWdt.begin(cfg::kWatchdogTimeoutMs);
   const uint64_t t = nowUs();
   gBreathSinceUs = t;
   gBiteSinceUs = t;

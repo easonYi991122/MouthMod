@@ -3,6 +3,7 @@
 
 #include "JoystickMapper.h"
 #include "PressureChannel.h"
+#include "SipArmGate.h"
 
 namespace {
 
@@ -187,9 +188,57 @@ void test_pressure_baseline_tracks_drift_and_saturated_seed() {
   assert(!b.sip() && b.sipHeldUs(t) == 0 && b.neutral());
 }
 
+// Runs the gate for ms milliseconds of a sip that started at `start` ms.
+bool sipFor(SipArmGate* g, int fromMs, int toMs, bool disarmed = true,
+            bool enable = true, int startMs = -1) {
+  bool fired = false;
+  const int start = startMs < 0 ? fromMs : startMs;
+  for (int t = fromMs; t <= toMs; t += 10) {
+    const uint64_t held = static_cast<uint64_t>(t - start) * 1000U;
+    fired = g->update(disarmed, enable, true, held == 0 ? 1 : held) || fired;
+  }
+  return fired;
+}
+
+void test_sip_arm_gate() {
+  SipArmGate g;
+  // Sip already held at power-up: ignored until released.
+  assert(!sipFor(&g, 0, 2000));
+  assert(g.waitingForRelease());
+  assert(!g.update(true, true, false, 0));
+  // Short sip: no arm. Long sip: exactly one arm.
+  assert(!sipFor(&g, 0, 500));
+  g.update(true, true, false, 0);
+  int fires = 0;
+  for (int t = 0; t <= 3000; t += 10) {
+    if (g.update(true, true, true, static_cast<uint64_t>(t) * 1000U + 1)) ++fires;
+  }
+  assert(fires == 1);
+  g.update(true, true, false, 0);
+
+  // Disarming sip that continues into DISARMED never re-arms.
+  assert(!sipFor(&g, 0, 140, false));       // ACTIVE: the sip starts
+  assert(!sipFor(&g, 150, 3000, true, true, 0));  // now DISARMED, same sip
+  g.update(true, true, false, 0);                  // released
+  assert(sipFor(&g, 0, 1000));              // a new long sip arms
+
+  // Disarming sip whose hold timer restarts (pressure wobbles inside the
+  // sip hysteresis band) but whose level never drops: still no re-arm.
+  g.update(true, true, false, 0);
+  assert(!sipFor(&g, 0, 140, false));
+  g.update(true, true, true, 0);            // timer dip, sip still active
+  assert(!sipFor(&g, 0, 2000));
+
+  // D6 open: no arm, and closing D6 mid-sip needs a release first.
+  g.update(true, true, false, 0);
+  assert(!sipFor(&g, 0, 1500, true, false));
+  assert(!sipFor(&g, 1500, 3000, true, true, 0));
+}
+
 }  // namespace
 
 void run_channel_tests() {
+  test_sip_arm_gate();
   test_hx710b_sign_extension();
   test_joystick_directions_and_hysteresis();
   test_joystick_half_axis_spans();
