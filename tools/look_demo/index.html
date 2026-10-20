@@ -353,7 +353,7 @@ function connectBridge() {
   $('btnBridge').textContent = '断开（本地桥）';
 }
 function disconnectBridge() {
-  send('hid 0'); send('disarm');
+  send('disarm');
   if (bridgeES) bridgeES.close();
   bridgeES = null; link = null; setBadge(null);
   $('btnBridge').textContent = '连接板子（本地桥）';
@@ -447,7 +447,7 @@ $('cmdForm').onsubmit = (e) => {
   if (v) { send(v); log('> ' + v); }
   $('cmdIn').value = '';
 };
-function disarmAll() { send('hid 0'); send('disarm'); $('chkHid').checked = false; }
+function disarmAll() { send('disarm'); }
 $('btnDisarmTop').onclick = disarmAll;
 document.addEventListener('keydown', (e) => {
   const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName) && e.target.type !== 'checkbox' && e.target.type !== 'range';
@@ -455,8 +455,8 @@ document.addEventListener('keydown', (e) => {
 });
 window.addEventListener('beforeunload', () => {
   if (!link) return;
-  if (link.kind === 'bridge') { navigator.sendBeacon('/cmd', 'hid 0'); navigator.sendBeacon('/cmd', 'disarm'); }
-  else { link.write('hid 0'); link.write('disarm'); }
+  if (link.kind === 'bridge') navigator.sendBeacon('/cmd', 'disarm');
+  else link.write('disarm');
 });
 
 $('chkHid').onchange = () => {
@@ -478,7 +478,7 @@ $('scene').addEventListener('click', async () => {
 document.addEventListener('pointerlockchange', () => {
   const locked = document.pointerLockElement === $('scene');
   $('lockHint').style.display = locked ? 'none' : '';
-  if (!locked && $('chkHid').checked) { disarmAll(); log('指针锁定已退出 → 关闭 HID 并停用', 'ev'); }
+  if (!locked && $('chkHid').checked) { disarmAll(); log('指针锁定已退出 → 停用', 'ev'); }
 });
 document.addEventListener('mousemove', (e) => {
   if (document.pointerLockElement !== $('scene')) return;

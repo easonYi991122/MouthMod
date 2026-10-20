@@ -167,6 +167,24 @@ void test_pressure_sip_is_not_a_puff() {
   assert(c.active() && !c.sip());
 }
 
+void test_pressure_puff_rebound_is_not_a_sip() {
+  PressureChannel c;
+  uint64_t t = seed(&c);
+  const int32_t base = c.baseline();
+  // Hard puff, then the rebound seen on the rig: -200000 for 300 ms.
+  for (int i = 0; i < 8; ++i) c.addSample(t += kSample, base + 3000000);
+  assert(c.active());
+  for (int i = 0; i < 12; ++i) {
+    c.addSample(t += kSample, base - 200000);
+    assert(!c.sip() && c.sipHeldUs(t) == 0);
+  }
+  assert(!c.active());
+  for (int i = 0; i < 40; ++i) c.addSample(t += kSample, base);
+  // A deliberate sip after the lockout still disarms.
+  for (int i = 0; i < 8; ++i) c.addSample(t += kSample, base - 200000);
+  assert(c.sip() && c.sipHeldUs(t) >= 150000);
+}
+
 void test_pressure_baseline_tracks_drift_and_saturated_seed() {
   PressureChannel c;
   uint64_t t = seed(&c);
@@ -247,5 +265,6 @@ void run_channel_tests() {
   test_pressure_seed_and_confirm();
   test_pressure_release_delay_and_freeze();
   test_pressure_sip_is_not_a_puff();
+  test_pressure_puff_rebound_is_not_a_sip();
   test_pressure_baseline_tracks_drift_and_saturated_seed();
 }

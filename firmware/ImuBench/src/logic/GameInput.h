@@ -1,14 +1,14 @@
 // Minecraft Education adapter: channel levels -> USB keyboard + mouse reports.
 //
 // Frozen mapping (guide §b/§c, [E] §4–5): joystick -> W/A/S/D held; bite ->
-// one Space tap per rising edge; puff -> right button (press and release both
-// delivered); head tilt -> mouse motion. Sip/D6 disarm is the caller's job:
+// one Space tap per rising edge; puff -> left button, held while puffing
+// (attack / mine; press and release both delivered; D29); head tilt -> mouse motion. Sip/D6 disarm is the caller's job:
 // it calls releaseAll() and stops passing allowActions.
 //
 // Delivery rules from the HID section of the guide:
 // - one full desired keyboard state, so a jump never releases W;
 // - every mouse report carries the current buttons, so motion never drops a
-//   held right button;
+//   held left button;
 // - a press is only "done" once its report was accepted, and it stays down
 //   for at least minPressUs before its release (the game samples input per
 //   frame/tick, so a 2 ms tap can be missed);
@@ -30,7 +30,7 @@ const uint8_t kKeyLeft = 0x04;     // A
 const uint8_t kKeyBack = 0x16;     // S
 const uint8_t kKeyRight = 0x07;    // D
 const uint8_t kKeyJump = 0x2C;     // Space
-const uint8_t kButtonUse = 0x02;   // right mouse button
+const uint8_t kButtonPuff = 0x01;  // left mouse button (D29)
 }  // namespace mc
 
 // Levels from the channel mappers, already filtered and hysteresis-confirmed.
@@ -40,13 +40,13 @@ struct GameIntent {
   bool left;
   bool right;
   bool jump;  // bite active: one Space tap per rising edge, never repeats
-  bool use;   // puff active: right button held while active
+  bool use;   // puff active: left button held while active
 };
 
 GameIntent noGameIntent();
 
 struct GameInputParams {
-  uint32_t minPressUs;  // shortest Space / right-button hold the host sees
+  uint32_t minPressUs;  // shortest Space / left-button hold the host sees
 };
 
 GameInputParams defaultGameInputParams();

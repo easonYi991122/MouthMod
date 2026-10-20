@@ -18,7 +18,7 @@ html, body { margin: 0; background: var(--bg); color: var(--fg);
 .muted { color: var(--muted); font-size: 12px; }
 .box { background: var(--panel); border-radius: 6px; padding: 6px 8px; margin: 6px 0; }
 #keys { font: 700 22px/1.2 Menlo, Consolas, monospace; color: var(--accent); }
-#right { font-size: 14px; }
+#btn { font-size: 14px; }
 .grid { display: grid; grid-template-columns: 112px 1fr; gap: 8px; align-items: center; }
 #look { font: 12px/1.45 Menlo, Consolas, monospace; white-space: pre; }
 #chan { font: 12px/1.5 Menlo, Consolas, monospace; white-space: pre; }
@@ -45,7 +45,7 @@ input[type=number], input[type=text] { width: 100%; font: inherit; padding: 2px 
 
   <div class="box">
     <div class="muted">游戏实际收到</div>
-    <div class="row"><span id="keys">—</span><span id="right" style="margin-left:auto">右键 ○</span></div>
+    <div class="row"><span id="keys">—</span><span id="btn" style="margin-left:auto">左键 ○</span></div>
   </div>
 
   <div class="grid">
@@ -89,9 +89,14 @@ const STATE = {
   DISARMED: ['停用', '#8a8f98'], CALIBRATING: ['校准中 · 保持静止', '#d4a72c'],
   WAIT_NEUTRAL: ['等待回中', '#d4a72c'], ACTIVE: ['启用', '#2ea44f'], FAULT: ['故障 · 需确认', '#d73a49'],
 };
-let D = null, S = null, P = {}, keys = '-', right = '0', front = null, frontName = '?';
+let D = null, S = null, P = {}, keys = '-', btn = '0', front = null, frontName = '?';
 let logLines = [], sumX = 0, sumY = 0, rateX = 0, rateY = 0, rateT = performance.now();
-let lastDraw = 0;
+let lastDraw = 0, faultWhy = '';
+// Why the board is latched in FAULT; the #E line scrolls out of the log fast.
+const FAULT_WHY = {
+  fault_imu_timeout: 'IMU 无数据', fault_imu_init: 'IMU 初始化失败',
+  fault_breath_timeout: '吹吸模块无读数（没接或松了？）', fault_bite_timeout: '咬合模块无读数（没接或松了？）',
+};
 
 function kv(parts) { const o = {}; for (const p of parts) { const i = p.indexOf('='); if (i > 0) o[p.slice(0, i)] = p.slice(i + 1); } return o; }
 function send(cmd) { fetch('/cmd', { method: 'POST', body: cmd }).catch(() => log('发送失败: ' + cmd)); }
@@ -116,9 +121,11 @@ function handle(line) {
         if (k in P && el.ownerDocument.activeElement !== el) el.value = +P[k];
       }
       break;
-    case '#K': { const i = kv(parts.slice(2)); keys = i.keys || '-'; right = i.right || '0'; break; }
+    case '#K': { const i = kv(parts.slice(2)); keys = i.keys || '-'; btn = i.left || '0'; break; }
     case '#F': log('前台门控: ' + (kv(parts.slice(2)).front === '1' ? '放行' : '拦截')); break;
-    case '#E': log('事件 ' + parts.slice(2).join(' → ')); break;
+    case '#E':
+      if (parts[3] === 'FAULT' && parts[2] !== 'fault_ack') faultWhy = FAULT_WHY[parts[2]] || parts[2];
+      log('事件 ' + parts.slice(2).join(' → ')); break;
     case '#OK': case '#ERR': case '#C': log(line); break;
     case '#BRIDGE':
       if (parts[1] === 'front') { frontName = parts[2]; front = parts[3] === '1'; }
@@ -141,8 +148,8 @@ function render() {
     $('front').style.color = front ? 'var(--ok)' : (gate && $('chkHid').checked ? 'var(--warn)' : '');
   }
   $('keys').textContent = keys === '-' ? '—' : keys;
-  $('right').textContent = right === '1' ? '右键 ●' : '右键 ○';
-  $('right').style.color = right === '1' ? 'var(--accent)' : '';
+  $('btn').textContent = btn === '1' ? '左键 ●' : '左键 ○';
+  $('btn').style.color = btn === '1' ? 'var(--accent)' : '';
   drawLook();
   if (S && S.length >= 17) {
     const dot = (v) => (v === '1' ? '●' : '○');
@@ -150,8 +157,15 @@ function render() {
       `摇杆 ${S[6].padEnd(3)} (${(+S[4]).toFixed(2)}, ${(+S[5]).toFixed(2)})\n` +
       `吹吸 p=${S[9]}  吹${dot(S[10])} 吸${dot(S[11])}  咬${dot(S[15])}`;
   }
-  $('hint').textContent = (D && D[20] === '1' && gate && front === false)
-    ? '真实输出已开，但 Minecraft 不在前台：按键和视角被拦截（点回游戏窗口即可）' : '';
+  let hint = '';
+  if (D && D[3] === 'FAULT') {
+    hint = `故障${faultWhy ? '：' + faultWhy : '（原因见日志 #E 行）'}。此时视角和按键都不输出：排除原因后点「确认故障」，再启用`;
+  } else if (D && D[3] === 'ACTIVE' && D[20] !== '1') {
+    hint = '已启用，但「真实键鼠输出」没勾：小图里视角在动，游戏却收不到任何指令';
+  } else if (D && D[20] === '1' && gate && front === false) {
+    hint = '真实输出已开，但 Minecraft 不在前台：按键和视角被拦截（点回游戏窗口即可）';
+  }
+  $('hint').textContent = hint;
 }
 
 function drawLook() {
@@ -208,7 +222,7 @@ $('btnPip').onclick = async () => {
   $('btnPip').style.display = 'none';
   pip.addEventListener('pagehide', () => { document.body.appendChild(panel); $('btnPip').style.display = ''; });
 };
-window.addEventListener('beforeunload', () => { navigator.sendBeacon('/cmd', 'hid 0'); navigator.sendBeacon('/cmd', 'disarm'); });
+window.addEventListener('beforeunload', () => { navigator.sendBeacon('/cmd', 'disarm'); });
 connect();
 render();
 </script>

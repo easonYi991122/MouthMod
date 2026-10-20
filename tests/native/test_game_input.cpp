@@ -104,18 +104,18 @@ void test_use_follows_puff_and_motion_keeps_button() {
   Host h;
   h.settle(noGameIntent());
   HidPlan p = h.step(intent(false, false, true));
-  assert(p.slot == HID_MOUSE && p.buttons == mc::kButtonUse);
+  assert(p.slot == HID_MOUSE && p.buttons == mc::kButtonPuff);
   // Long puff with head motion: every mouse report keeps the right button.
   for (int i = 0; i < 30; ++i) {
     p = h.step(intent(false, false, true), true, 3, -2);
-    assert(p.slot == HID_MOUSE && p.buttons == mc::kButtonUse && p.dx == 3);
+    assert(p.slot == HID_MOUSE && p.buttons == mc::kButtonPuff && p.dx == 3);
   }
   p = h.step(noGameIntent());
   assert(p.slot == HID_MOUSE && p.buttons == 0);
 
   // A one-loop puff still holds for the minimum time, then releases.
   p = h.step(intent(false, false, true));
-  assert(p.buttons == mc::kButtonUse);
+  assert(p.buttons == mc::kButtonPuff);
   const uint64_t down = h.t;
   uint64_t up = 0;
   for (int i = 0; i < 20 && !up; ++i) {
@@ -206,7 +206,7 @@ void test_disarm_releases_at_once_and_needs_release_to_retrigger() {
   for (int i = 0; i < 2; ++i) {
     p = h.step(intent(true, true, true));
     if (p.slot == HID_KEYBOARD) jumped = hasKey(p.keys, mc::kKeyJump);
-    if (p.slot == HID_MOUSE) used = p.buttons == mc::kButtonUse;
+    if (p.slot == HID_MOUSE) used = p.buttons == mc::kButtonPuff;
   }
   assert(jumped && used);
 }

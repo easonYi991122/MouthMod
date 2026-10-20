@@ -23,6 +23,7 @@ Usage:
   python3 bridge.py --focus-app "minecraft"   # substring of the app name
 """
 import argparse
+import collections
 import glob
 import json
 import os
@@ -47,6 +48,7 @@ class SerialLink:
         self.clients_lock = threading.Lock()
         self.current = None
         self.lines = 0
+        self.events = collections.deque(maxlen=8)  # last #E lines
 
     def detect(self):
         if self.path:
@@ -115,6 +117,8 @@ class SerialLink:
                         line = raw.decode(errors="replace").strip()
                         if line:
                             self.lines += 1
+                            if line.startswith("#E,"):
+                                self.events.append(line)  # replayed to late pages
                             self.broadcast(line)
             except OSError as e:
                 print(f"[bridge] lost {path}: {e}", flush=True)
@@ -223,6 +227,8 @@ class Handler(SimpleHTTPRequestHandler):
             try:
                 state = f"#BRIDGE,connected,{LINK.current}" if LINK.current else "#BRIDGE,waiting"
                 self.wfile.write(f"data: {state}\n\n".encode())
+                for ev in list(LINK.events):
+                    self.wfile.write(f"data: {ev}\n\n".encode())
                 if FOCUS and FOCUS.name:
                     front = f"#BRIDGE,front,{FOCUS.name},{1 if FOCUS.front else 0}"
                     self.wfile.write(f"data: {front}\n\n".encode())

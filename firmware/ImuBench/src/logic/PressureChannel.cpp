@@ -15,6 +15,7 @@ PressureParams defaultBreathParams() {
   p.sipOffCounts = 50000;
   p.confirmSamples = 2;
   p.releaseHoldUs = 250000;  // team's RELEASE_DELAY
+  p.sipLockoutUs = 400000;   // puff rebound seen on the rig: ~150-300 ms
   p.baselineTauUs = 10e6f;
   p.freezeFraction = 0.3f;
   p.seedDiscard = 5;
@@ -48,6 +49,8 @@ void PressureChannel::reset() {
   onCount_ = 0;
   releasing_ = false;
   releaseSinceUs_ = 0;
+  puffEnded_ = false;
+  puffEndUs_ = 0;
   sip_ = false;
   sipCount_ = 0;
   sipBelow_ = false;
@@ -99,6 +102,8 @@ void PressureChannel::addSample(uint64_t sampleUs, int32_t raw) {
     if (sampleUs - releaseSinceUs_ >= params_.releaseHoldUs) {
       active_ = false;
       releasing_ = false;
+      puffEnded_ = true;
+      puffEndUs_ = sampleUs;
     }
   } else {
     releasing_ = false;
@@ -106,7 +111,9 @@ void PressureChannel::addSample(uint64_t sampleUs, int32_t raw) {
 
   // Sip: below -sipOn; the hold time counts from the first such sample.
   if (params_.sipOnCounts > 0) {
-    const bool below = p_ <= -params_.sipOnCounts;
+    const bool lockedOut =
+        active_ || (puffEnded_ && sampleUs - puffEndUs_ < params_.sipLockoutUs);
+    const bool below = !lockedOut && p_ <= -params_.sipOnCounts;
     if (below && !sipBelow_) sipSinceUs_ = sampleUs;
     sipBelow_ = below;
     if (!sip_) {

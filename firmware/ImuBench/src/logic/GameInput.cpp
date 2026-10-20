@@ -77,7 +77,7 @@ void GameInput::update(uint64_t nowUs, const GameIntent& in, bool allowActions) 
   if (jump_.state == P_DOWN && nowUs - jump_.downUs >= params_.minPressUs) {
     jump_.state = P_WANT_UP;
   }
-  // Right button follows the puff, but never shorter than the minimum hold.
+  // Left button follows the puff, but never shorter than the minimum hold.
   if (use_.state == P_DOWN && !useLevel_ &&
       nowUs - use_.downUs >= params_.minPressUs) {
     use_.state = P_WANT_UP;
@@ -95,7 +95,7 @@ void GameInput::desiredKeys(uint8_t keys[6]) const {
 }
 
 uint8_t GameInput::desiredButtons() const {
-  return wantsDown(use_) ? mc::kButtonUse : 0;
+  return wantsDown(use_) ? mc::kButtonPuff : 0;
 }
 
 bool GameInput::keyboardDirty() const {
@@ -155,7 +155,7 @@ void GameInput::committed(const HidPlan& p, uint64_t nowUs) {
   } else if (p.slot == HID_MOUSE) {
     sentButtons_ = p.buttons;
     forceMouse_ = false;
-    onCommit(&use_, (p.buttons & mc::kButtonUse) != 0, nowUs);
+    onCommit(&use_, (p.buttons & mc::kButtonPuff) != 0, nowUs);
   } else {
     return;
   }

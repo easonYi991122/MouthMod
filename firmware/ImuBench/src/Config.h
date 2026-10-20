@@ -9,7 +9,7 @@ namespace cfg {
 
 // --- Build / identity ---
 static const char* const kFirmwareName = "MouthMod-ImuBench";
-static const char* const kFirmwareVersion = "0.6.0";
+static const char* const kFirmwareVersion = "0.6.1";
 
 // --- Loop ---
 static const uint32_t kLoopPeriodUs = 10000;  // 100 Hz, non-blocking (frozen)
@@ -49,8 +49,9 @@ static const uint8_t kPinEnable = 6;          // D6
 // Bench-only: closing the serial port (DTR low) disarms, so closing the
 // demo page always stops the mouse.
 static const bool kDisarmOnSerialClose = true;
-// Real HID mouse output starts disabled; enable with "hid 1".
-static const bool kHidEnabledAtBoot = false;
+// Real HID output starts enabled ("hid 0" for a dry run). Output still
+// needs ARMED, and with "fgate 1" Minecraft in front (D30).
+static const bool kHidEnabledAtBoot = true;
 // Watchdog is not started in the bench build (guide section f, step 1).
 // Before turning it on: check that upload / double-tap DFU still works with
 // it running (the WDT survives a soft reset into the bootloader).

@@ -8,7 +8,9 @@
 // - trigger needs 2 consecutive *fresh* samples (40 Hz -> 50 ms);
 // - baseline seeded from rest samples without blocking, then tracked with
 //   tau = 10 s only while |p| < 0.3 x trigger (frozen during actions);
-// - sipHeldUs() lets the caller disarm after >= 150 ms below threshold.
+// - sipHeldUs() lets the caller disarm after >= 150 ms below threshold;
+// - no sip while a puff is held or within sipLockoutUs after it releases:
+//   a hard puff rebounds below baseline and must not disarm (D31).
 // Pure C++: the caller passes samples and their read time.
 #ifndef MOUTHMOD_PRESSURE_CHANNEL_H
 #define MOUTHMOD_PRESSURE_CHANNEL_H
@@ -26,6 +28,7 @@ struct PressureParams {
   int32_t sipOffCounts;     // negative release magnitude
   uint8_t confirmSamples;   // consecutive fresh samples to trigger
   uint32_t releaseHoldUs;   // p must stay <= off this long to release
+  uint32_t sipLockoutUs;    // no sip this long after a puff releases
   float baselineTauUs;      // slow tracking time constant
   float freezeFraction;     // track only while |p| < this x onCounts
   uint8_t seedDiscard;      // samples dropped after reset (mode settling)
@@ -79,6 +82,8 @@ class PressureChannel {
   uint8_t onCount_;
   bool releasing_;
   uint64_t releaseSinceUs_;
+  bool puffEnded_;
+  uint64_t puffEndUs_;
 
   bool sip_;
   uint8_t sipCount_;

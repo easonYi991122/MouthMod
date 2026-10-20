@@ -132,13 +132,14 @@ void printChannels() {
   const PressureParams& k = gBite.params();
   emitf("#Q,joy=%u,jcenter=%.0f/%.0f,jon=%.3f,joff=%.3f,jspan=%.0f/%.0f/%.0f/%.0f,"
         "jswap=%u,jinvx=%u,jinvy=%u,breath=%u,bsign=%d,bon=%ld,boff=%ld,son=%ld,"
-        "soff=%ld,brel_ms=%lu,bite=%u,ksign=%d,kon=%ld,koff=%ld\n",
+        "soff=%ld,brel_ms=%lu,slock_ms=%lu,bite=%u,ksign=%d,kon=%ld,koff=%ld\n",
         gUseJoy ? 1U : 0U, gJoy.center(0), gJoy.center(1), j.onNorm, j.offNorm,
         j.spanPos[0], j.spanNeg[0], j.spanPos[1], j.spanNeg[1], j.swapXY ? 1U : 0U,
         j.invertX ? 1U : 0U, j.invertY ? 1U : 0U, gUseBreath ? 1U : 0U, b.sign,
         static_cast<long>(b.onCounts), static_cast<long>(b.offCounts),
         static_cast<long>(b.sipOnCounts), static_cast<long>(b.sipOffCounts),
-        static_cast<unsigned long>(b.releaseHoldUs / 1000U), gUseBite ? 1U : 0U,
+        static_cast<unsigned long>(b.releaseHoldUs / 1000U),
+        static_cast<unsigned long>(b.sipLockoutUs / 1000U), gUseBite ? 1U : 0U,
         k.sign, static_cast<long>(k.onCounts), static_cast<long>(k.offCounts));
 }
 
@@ -178,7 +179,7 @@ void printCalibration() {
 }
 
 // Channel thresholds: jon joff jswap jinvx jinvy | bsign bon boff son soff
-// brel(ms) | ksign kon koff. Takes effect at once; copy final values into
+// brel(ms) slock(ms) | ksign kon koff. Takes effect at once; copy final values into
 // the defaults in JoystickMapper.cpp / PressureChannel.cpp.
 bool setChannelParam(const char* name, float v) {
   JoystickParams j = gJoy.params();
@@ -197,6 +198,7 @@ bool setChannelParam(const char* name, float v) {
   else if (!strcmp(name, "son")) b.sipOnCounts = counts;
   else if (!strcmp(name, "soff")) b.sipOffCounts = counts;
   else if (!strcmp(name, "brel")) b.releaseHoldUs = static_cast<uint32_t>(v * 1000.0f);
+  else if (!strcmp(name, "slock")) b.sipLockoutUs = static_cast<uint32_t>(v * 1000.0f);
   else if (!strcmp(name, "ksign")) k.sign = sign;
   else if (!strcmp(name, "kon")) k.onCounts = counts;
   else if (!strcmp(name, "koff")) k.offCounts = counts;
@@ -334,8 +336,8 @@ void logGameOutput(uint64_t t) {
     if (names[0]) strncat(names, "+", sizeof(names) - strlen(names) - 1);
     strncat(names, n, sizeof(names) - strlen(names) - 1);
   }
-  emitf("#K,%lu,keys=%s,right=%u,hid=%u\n", static_cast<unsigned long>(t / 1000U),
-        names[0] ? names : "-", (buttons & mc::kButtonUse) ? 1U : 0U,
+  emitf("#K,%lu,keys=%s,left=%u,hid=%u\n", static_cast<unsigned long>(t / 1000U),
+        names[0] ? names : "-", (buttons & mc::kButtonPuff) ? 1U : 0U,
         gHidEnabled ? 1U : 0U);
 }
 

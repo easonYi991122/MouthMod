@@ -43,7 +43,7 @@ MouthMod/
 
 需要真实游戏的只有两件事，留到计划中的 Oct 23–25 联调阶段做：
 1. 提案写的是 **Minecraft Education**（基于 Bedrock）。它的灵敏度公式、是否使用原始输入，都和 Java 版不同。测试页里的换算只用来做相对比较，最终灵敏度要在游戏里定，然后记录下来。
-2. 和键盘通道（W/A/S/D、Space、右键）同时工作的组合演示。
+2. 和键盘通道（W/A/S/D、Space、左键）同时工作的组合演示。
 
 ## 1. 安装（Arduino IDE，macOS）
 
@@ -102,7 +102,7 @@ python3 tools/look_demo/bridge.py   # 在仓库根目录运行
 | `arm` | DISARMED → 开始 3 s 静止校准 → 回中 300 ms → ACTIVE（替代长吸；如果打开了 D6，还需要 D6 闭合） |
 | `disarm` / `x` | 停用，释放全部 |
 | `ack` | 确认 FAULT → DISARMED（替代 D6 拨动） |
-| `hid 0\|1` | 关闭/开启真实 USB 鼠标输出（上电默认关闭） |
+| `hid 0\|1` | 关闭/开启真实 USB 键鼠输出（v0.6.1 起上电默认开启，见 D30） |
 | `set <k> <v>` | `kx ky dead hyst sat alpha hmode vmode invx invy rate` |
 | `mount <up> <fwd>` | 例：`mount -Y +Z`；修改后自动停用，需要重新校准 |
 | `get` | 打印 `#I` 身份、`#P` 参数、`#C` 校准结果、`#H` 列名 |
@@ -123,7 +123,7 @@ python3 tools/look_demo/bridge.py   # 在仓库根目录运行
 
 ## 5. 安全设计（调试版）
 
-- 上电默认 DISARMED；HID 默认关闭；非 ACTIVE 状态鼠标增量恒为 0。
+- 上电默认 DISARMED；HID 默认开启但必须先启用才有输出；非 ACTIVE 状态鼠标增量恒为 0。
 - 串口 DTR 断开（关页面、断开、拔线）会立即停用。这是仅在调试版启用的保护，可以在 `Config.h` 里关掉。
 - IMU 连续 100 ms 没有新样本，或者初始化失败，都会进入 FAULT 并锁存。样本恢复后也不会自动恢复，必须确认故障才回到 DISARMED，之后还要重新校准。
 - 进入停用、校准或故障时，会先发出键盘全松和鼠标零按钮报告；这两个报告被端点接受之前会一直保持待发。
