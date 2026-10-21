@@ -33,9 +33,15 @@ serial:
   port_glob: /dev/cu.usbmodem*
   one_owner_at_a_time: [bridge.py, Arduino serial monitor, Chrome Web Serial, arduino-cli upload]
 bridge:
-  cmd: python3 tools/look_demo/bridge.py [--http PORT] [--serial DEV] [--focus-app SUBSTR]
+  cmd: python3 tools/look_demo/bridge.py [--http PORT|0] [--serial DEV] [--focus-app SUBSTR] [--exit-with-parent]
   default_http: 8765               # pick another (e.g. 8766) if taken
   pages: ["/ (full test page)", "/float.html (floating debug window)"]
+float_app:  # preferred UI (D32); browser + bridge is the backup
+  source: tools/float_app/MouthModFloat.swift
+  build: scripts/build-float-app.sh   # -> "build/MouthMod Float.app", needs only Command Line Tools
+  runs: /usr/bin/python3 <app>/Contents/Resources/look_demo/bridge.py --http 0 --exit-with-parent
+  extra_bridge_args_env: MOUTHMOD_BRIDGE_ARGS   # e.g. "--serial /dev/cu.usbmodem1101"
+  note: bundles a copy of tools/look_demo; rebuild after changing bridge.py or the pages
   api: {GET: [/bridge-info, /events (SSE, one board line per event)], POST: [/cmd (body = one command line)]}
 pins:  # frozen by the spec; do not change
   A0: joystick X wiper
@@ -66,8 +72,8 @@ password, or physical action): ask them and wait. Do not run `sudo`.
    what the humans use, so prefer it.
 6. **Install and build.** `./scripts/setup-macos.sh` — installs the board core
    (≈200 MB download), the LSM6DS3 library and the macOS fix, then runs the
-   host tests and builds. Success = `SUMMARY fails=0` and
-   `[ok] firmware built: build/ImuBench.uf2`.
+   host tests and builds. Success = `SUMMARY fails=0`,
+   `[ok] firmware built: build/ImuBench.uf2` and `[ok] floating window app: …`.
 7. **HUMAN — flash.** Plug in the board, user **double-taps RESET** quickly;
    a drive `XIAO-SENSE` appears. Then:
    `cp build/ImuBench.uf2 /Volumes/XIAO-SENSE/` (the drive ejects itself; a
@@ -83,12 +89,17 @@ password, or physical action): ask them and wait. Do not run `sudo`.
 
 ## Run (daily use)
 
+Preferred: `open "build/MouthMod Float.app"` — an always-on-top panel that
+never takes focus from Minecraft; it starts its own bridge on a free port
+(find it with `lsof -nP -iTCP -sTCP:LISTEN | grep Python`). Backup:
+
 ```bash
 python3 tools/look_demo/bridge.py --http 8766   # leave running; Ctrl+C stops it and disarms the board
 ```
 
-Human opens `http://localhost:8766/float.html` in Chrome/Edge and clicks
-"弹出置顶悬浮窗". Full usage and command list: `docs/USAGE.md`.
+then the human opens `http://localhost:8766/float.html` in Chrome/Edge and
+clicks "弹出置顶悬浮窗". Never run both: one serial owner. Full usage and
+command list: `docs/USAGE.md`.
 Agents can drive the board through the bridge:
 `curl -s -X POST --data 'get' http://127.0.0.1:8766/cmd`.
 Commands that make the computer receive keys/mouse (`arm` when HID is on,

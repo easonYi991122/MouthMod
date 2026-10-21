@@ -19,9 +19,13 @@ MouthMod/
     src/hardware/Hx710b.*       HX710B 非阻塞读取（27 脉冲 = 40 Hz）
   tests/native/                 逻辑的主机端测试
   scripts/test-native.sh        编译并运行主机端测试
+  scripts/setup-macos.sh        新 Mac 一键部署和自检（板包、库、修复、测试、编译固件和悬浮窗 app）
+  scripts/build-firmware.sh     编译固件，生成 build/ImuBench.uf2
+  scripts/build-float-app.sh    生成 build/MouthMod Float.app（悬浮窗 app）
+  tools/float_app/              悬浮窗 app 的 Swift 源码：置顶、不抢焦点，内部启动 bridge.py 并显示 float.html
   tools/look_demo/index.html    浏览器测试页（3D 体素场景、调参、图表）
   tools/look_demo/bridge.py     串口→浏览器本地桥（标准库，无需安装；macOS 上检测 Minecraft 是否在前台）
-  tools/look_demo/float.html    调试悬浮窗（Chrome/Edge 画中画置顶），显示实际按键、状态、通道
+  tools/look_demo/float.html    调试悬浮窗页面（悬浮窗 app 里显示它；备用方案是在 Chrome/Edge 里用画中画置顶）
   tools/macos/platform.local.txt  macOS 编译修复（见下）
   docs/imu-decisions.md         规格没写死、本工程暂定的实现选择
   docs/minecraft-education.md   为什么保持键鼠、按键映射、合并接口、今晚实机测试步骤
@@ -29,7 +33,7 @@ MouthMod/
 
 ## 要不要现在装 Minecraft？
 
-> **接线与使用说明：[docs/USAGE.md](docs/USAGE.md)**。悬浮窗：桥运行后打开 `http://localhost:8765/float.html`。
+> **接线与使用说明：[docs/USAGE.md](docs/USAGE.md)**。悬浮窗：双击 `build/MouthMod Float.app`（备用：桥运行后在 Chrome 里打开 `http://localhost:8765/float.html`）。
 >
 > **新 Mac 部署**：在仓库根目录运行 `./scripts/setup-macos.sh`。它会检查并安装板包、库和 macOS 修复，然后跑测试、编译出 `build/ImuBench.uf2`；不能自动处理的项会标成 `[FAIL]`，并给出要执行的命令。用 Codex 或 Claude Code 部署时，让它按根目录的 [AGENTS.md](AGENTS.md) 来做。
 >
@@ -72,7 +76,7 @@ python3 tools/look_demo/bridge.py   # 在仓库根目录运行
 ```
 
 然后打开 <http://localhost:8765>，页面会自动连上板子。`bridge.py` 会自动找 `/dev/cu.usbmodem*`；板子拔掉或复位后会自动重连。
-所有页面都关掉时，桥会发 `hid 0` 和 `disarm`；按 Ctrl+C 停掉桥时串口关闭（DTR 断开），固件也会停用。
+所有页面都关掉时，以及按 Ctrl+C 停掉桥时，桥都会给板子发 `disarm`；真实输出的开关保持不变（D30）。
 
 **备选：Web Serial 直连。** 只能用**桌面版 Chrome 或 Edge**，页面也要通过 localhost 打开（可以直接用上面桥的地址，点「连接板子 (Web Serial)」）。app 内置浏览器不会弹出端口选择框，所以这种方式在 app 里用不了。
 

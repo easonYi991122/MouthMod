@@ -4,6 +4,7 @@
 #   scripts/setup-macos.sh          install what is missing, then build + test
 #   scripts/setup-macos.sh --check  only report (still runs tests and builds into build/)
 #
+# Also builds "build/MouthMod Float.app" (the floating debug window).
 # Installs only user-level Arduino data (board core, library, the macOS
 # platform.local.txt fix). Never installs system software: Xcode Command Line
 # Tools, Rosetta 2 and arduino-cli itself are reported with the command a
@@ -88,6 +89,11 @@ if [ $FAILS = 0 ]; then
     ok "firmware built: build/ImuBench.uf2 ($(echo "$out" | grep -o 'Sketch uses [0-9]* bytes'))"
   else
     echo "$out" | tail -15; fail "firmware build failed"
+  fi
+  if out=$(./scripts/build-float-app.sh 2>&1); then
+    ok "floating window app: ${out#OK }"
+  else
+    echo "$out" | tail -15; fail "floating window app build failed (scripts/build-float-app.sh)"
   fi
 fi
 

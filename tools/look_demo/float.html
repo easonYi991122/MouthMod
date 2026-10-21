@@ -222,6 +222,20 @@ $('btnPip').onclick = async () => {
   $('btnPip').style.display = 'none';
   pip.addEventListener('pagehide', () => { document.body.appendChild(panel); $('btnPip').style.display = ''; });
 };
+// Inside the floating-window app (tools/float_app): the panel is already on
+// top and never takes the keyboard from Minecraft. Clicking into a field
+// borrows the keyboard; Enter, Esc or leaving the field hands it back.
+const app = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.mm;
+if (app) {
+  $('btnPip').style.display = 'none';
+  panel.addEventListener('focusin', (e) => {
+    if (e.target.matches('input[type=text], input[type=number]')) app.postMessage('keyboard');
+  });
+  panel.addEventListener('focusout', () => app.postMessage('release'));
+  panel.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === 'Escape') setTimeout(() => document.activeElement && document.activeElement.blur(), 0);
+  });
+}
 window.addEventListener('beforeunload', () => { navigator.sendBeacon('/cmd', 'disarm'); });
 connect();
 render();

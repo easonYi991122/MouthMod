@@ -9,8 +9,8 @@ test page works in any browser (no Web Serial needed).
   POST /cmd         body = one command line, written to the board
   GET  /bridge-info JSON status
 
-Safety: when the last page disconnects the bridge sends "hid 0" and
-"disarm"; closing the bridge closes the port (DTR low), which also disarms.
+Safety: when the last page disconnects, and when the bridge stops (Ctrl+C
+or SIGTERM), it sends "disarm". Real HID stays as it was (D30).
 
 Focus: on macOS the bridge checks the frontmost app every 250 ms (lsappinfo,
 no extra permission) and keeps telling the board "focus 1" while Minecraft
@@ -21,6 +21,7 @@ Usage:
   python3 bridge.py                  # auto-detect /dev/cu.usbmodem*
   python3 bridge.py --serial /dev/cu.usbmodem1101 --http 8765
   python3 bridge.py --focus-app "minecraft"   # substring of the app name
+  python3 bridge.py --http 0         # any free port (printed on start)
 """
 import argparse
 import collections
@@ -29,6 +30,7 @@ import json
 import os
 import queue
 import select
+import signal
 import subprocess
 import sys
 import termios
@@ -143,8 +145,8 @@ class SerialLink:
             self.clients.remove(q)
             last = not self.clients
         if last:
-            self.write("hid 0\ndisarm\n")
-            print("[bridge] last page closed -> hid 0, disarm", flush=True)
+            self.write("disarm\n")
+            print("[bridge] last page closed -> disarm", flush=True)
 
 
 def frontmost_app():
@@ -266,7 +268,17 @@ def main():
     ap.add_argument("--http", type=int, default=8765, help="HTTP port")
     ap.add_argument("--focus-app", default="minecraft",
                     help="substring of the game's app name (default: minecraft)")
+    ap.add_argument("--exit-with-parent", action="store_true",
+                    help="stop when the launching process dies (used by the app)")
     args = ap.parse_args()
+    if args.exit_with_parent:
+        parent = os.getppid()
+
+        def watch_parent():
+            while os.getppid() == parent:
+                time.sleep(1.0)
+            os.kill(os.getpid(), signal.SIGTERM)  # same path as a normal stop
+        threading.Thread(target=watch_parent, daemon=True).start()
     LINK = SerialLink(args.serial)
     threading.Thread(target=LINK.run, daemon=True).start()
     if sys.platform == "darwin":
@@ -277,12 +289,17 @@ def main():
               flush=True)
     server = ThreadingHTTPServer(("127.0.0.1", args.http), Handler)
     server.daemon_threads = True
-    print(f"[bridge] open http://localhost:{args.http}  (Ctrl+C to stop)", flush=True)
-    print(f"[bridge] floating window: http://localhost:{args.http}/float.html", flush=True)
+    port = server.server_address[1]
+    print(f"[bridge] open http://localhost:{port}  (Ctrl+C to stop)", flush=True)
+    print(f"[bridge] floating window: http://localhost:{port}/float.html", flush=True)
+
+    def on_term(*_):
+        raise KeyboardInterrupt  # the floating-window app stops us this way
+    signal.signal(signal.SIGTERM, on_term)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        LINK.write("hid 0\ndisarm\n")
+        LINK.write("disarm\n")
         print("\n[bridge] stopped", flush=True)
 
 
