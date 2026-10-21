@@ -1,8 +1,9 @@
 # MouthMod 头部 IMU 视角：交接文档
 
-交接日期：2026-10-16　|　固件 `MouthMod-ImuBench 0.1.0`　|　板子：Seeed XIAO nRF52840 Sense
+交接日期：2026-10-16（2026-10-20 更新）　|　固件 `MouthMod-ImuBench 0.6.1`　|　板子：Seeed XIAO nRF52840 Sense
 
-本包是 MouthMod 中「头部倾角 → 鼠标视角」这一路的独立调试工程，包括固件、浏览器测试页、主机端测试和文档。吹吸、咬合、摇杆、D6 照护者开关都还没并进来。
+本包最初是「头部倾角 → 鼠标视角」这一路的独立调试工程，现在已经接入摇杆、吹吸、咬合和 Minecraft Education 键鼠适配，并配有一个调试悬浮窗 app。
+**新电脑从这里开始**：运行 `./scripts/setup-macos.sh`，或者让 Codex / Claude Code 按 [AGENTS.md](AGENTS.md) 部署；接线和日常使用见 [docs/USAGE.md](docs/USAGE.md)。
 详细用法见 [README.md](README.md)；规格里没写死、本工程先暂定的实现选择见 [docs/imu-decisions.md](docs/imu-decisions.md)。
 
 ## 1. 当前状态
@@ -16,7 +17,7 @@
 | 串口 → 本地桥 → 测试页 | ✅ 跑通 | 页面实时显示姿态、陀螺数据、状态 |
 | **倾头 → 视角动作** | ⚠️ **原因已找到，修复版待实板验证** | 校准静止阈值太严，见第 4 节；单文件版 `ImuLookMini` 已改为 3 dps |
 | 校准、真实 HID 鼠标、停用路径、延迟 | ⬜ 未测 | 按 README 第 3 节逐项记录 |
-| 悬浮窗 app（`build/MouthMod Float.app`，D32） | ⚠️ 已用模拟板验证：能启动桥、加载页面、发命令，强杀后桥会自动退出；**「点击不抢焦点」和全屏下的显示还没有实测** | 备用方案仍是浏览器版 |
+| 悬浮窗 app（`build/MouthMod Float.app`，D32） | ✅ 2026-10-20 组内实测正常（先用模拟板验证了启动、加载、发命令，以及强杀后桥自动退出） | 用法见 docs/USAGE.md §3.2；备用方案仍是浏览器版 |
 | 吹气改左键、吹气回弹不再误停用、上电默认打开真实输出（v0.6.1） | ⚠️ 主机测试通过，回弹问题来自实测日志；修复后还没有接真板复测 | 见 D29–D31 |
 | 起转区间 6°+80 ms、只对 Minecraft 生效、悬浮窗（v0.6.0） | ⚠️ 主机测试通过；门控和悬浮窗在模拟板上跑通，**没接真板测试** | 用法见 docs/USAGE.md |
 | 长吸启用、看门狗（v0.5.0） | ⚠️ 已写好、主机测试通过，**没有实测**；看门狗默认关闭 | decisions D25、D26 |
@@ -28,10 +29,11 @@
 
 ### 2.1 只烧录（不需要装任何工具）
 1. 用 USB-C 数据线连接板子，**快速双击** RESET 按钮。电脑上会出现一个叫 `XIAO-SENSE` 的盘。
-2. 把 `build/ImuBench.uf2` 拖进这个盘。拷完后板子会自动重启，这个盘也会消失，这是正常的。
+2. 把 `ImuBench.uf2` 拖进这个盘。这个文件从 GitHub 最新 Release 下载；`build/` 不在仓库里，要本地编译才会有（见 2.2）。拷完后板子会自动重启，这个盘也会消失，这是正常的。
 3. 先把盘里 `INFO_UF2.TXT` 的内容记下来（bootloader 版本）。交接指南要求记录这一项，目前还没记。
 
 ### 2.2 从源码编译
+- **macOS 推荐**：在仓库根目录运行 `./scripts/setup-macos.sh`。它会检查并安装下面几项，然后跑测试、编译出 `build/ImuBench.uf2` 和悬浮窗 app；最后一行是 `SUMMARY fails=0` 就说明完成了。Apple Silicon 的 Mac 需要先装 Rosetta 2，脚本会提示。下面是手动步骤，供排查用。
 - Arduino IDE 中添加板包网址 `https://files.seeedstudio.com/arduino/package_seeeduino_boards_index.json` → 安装 **Seeed nRF52 Boards 1.1.13**（不是带 mbed 的那个）。
 - 安装库 **Seeed Arduino LSM6DS3 2.0.7**。**不要**另装 Adafruit TinyUSB，用板包自带的 1.7.0。
 - 开发板选 *Seeed XIAO nRF52840 Sense*（不是 Plus），打开 `firmware/ImuBench/ImuBench.ino`。
