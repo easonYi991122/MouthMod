@@ -66,8 +66,9 @@
 
 ### 3.1 第一次准备
 
-1. 烧录固件：用 USB-C 接上板子，**快速双击 RESET**，然后把 Release 里的 `ImuBench.uf2` 拖进 `XIAO-SENSE` 盘。
-2. 拉取最新代码：`git pull`。
+1. 拉取最新代码：`git pull`（第一次用 `git clone https://github.com/easonYi991122/MouthMod.git`）。
+2. **新 Mac 先运行 `./scripts/setup-macos.sh`**，最后一行显示 `SUMMARY fails=0` 就说明环境装好了，并且已经编译出 `build/ImuBench.uf2`。Apple Silicon 的 Mac 需要先装 Rosetta 2，脚本会提示。也可以让 Codex 按仓库根目录的 `AGENTS.md` 来部署。只想刷固件、不打算改代码的话，可以跳过这一步，直接下载 Release 里的 `ImuBench.uf2`。
+3. 烧录固件：用 USB-C 接上板子，**快速双击 RESET**，然后把 `ImuBench.uf2` 拖进 `XIAO-SENSE` 盘。
 
 ### 3.2 每次使用
 

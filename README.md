@@ -29,7 +29,9 @@ MouthMod/
 
 ## 要不要现在装 Minecraft？
 
-> **接线与使用说明（v0.6.0）：[docs/USAGE.md](docs/USAGE.md)**。悬浮窗：桥运行后打开 `http://localhost:8765/float.html`。
+> **接线与使用说明：[docs/USAGE.md](docs/USAGE.md)**。悬浮窗：桥运行后打开 `http://localhost:8765/float.html`。
+>
+> **新 Mac 部署**：在仓库根目录运行 `./scripts/setup-macos.sh`。它会检查并安装板包、库和 macOS 修复，然后跑测试、编译出 `build/ImuBench.uf2`；不能自动处理的项会标成 `[FAIL]`，并给出要执行的命令。用 Codex 或 Claude Code 部署时，让它按根目录的 [AGENTS.md](AGENTS.md) 来做。
 >
 > 2026-10-19 更新：已经进入实机阶段。键鼠还是手柄、游戏设置、合并接口和测试表，见 [docs/minecraft-education.md](docs/minecraft-education.md)。
 
@@ -55,6 +57,7 @@ MouthMod/
 4. **macOS 必做**：板包的 platform.txt 里调用的是 `python`，而 macOS 只有 `python3`，不处理的话编译到最后一步会报 `exec: "python": executable file not found`。
    把 `tools/macos/platform.local.txt` 复制到
    `~/Library/Arduino15/packages/Seeeduino/hardware/nrf52/1.1.13/`，然后重启 IDE。
+   **Apple Silicon 的 Mac 还需要 Rosetta 2**：板包里的编译器和上传工具都是 x86 程序。没装的话，编译会报 `bad CPU type in executable`。装法：`softwareupdate --install-rosetta --agree-to-license`。
 5. 开发板选 *Seeed nRF52 Boards → Seeed XIAO nRF52840 Sense*（不是 Sense Plus）。端口选 `/dev/cu.usbmodem…`。
 6. 打开 `firmware/ImuBench/ImuBench.ino` 并上传。如果上传卡住，快速双击板上的 RESET 进入 bootloader，再上传一次。
 
