@@ -43,6 +43,8 @@ struct LookTick {
   float pitchDeg;
   float rollErrDeg;
   float pitchErrDeg;
+  float lookXErrDeg;       // mapped errors, before inversion
+  float lookYErrDeg;
   LookVelocity velocity;   // zero unless ACTIVE
   bool releaseAll;         // state left ACTIVE / entered a no-output state
   const char* event;       // static string or 0
@@ -84,6 +86,7 @@ class LookController {
   Vec3 gyroBiasDps() const { return bias_; }
   float roll0Deg() const { return roll0_; }
   float pitch0Deg() const { return pitch0_; }
+  float yawDeg() const { return yaw_; }
   bool calibrated() const { return calibrated_; }
   uint64_t lastSampleUs() const { return lastSampleUs_; }
   bool hasSample() const { return hasSample_; }
@@ -92,6 +95,7 @@ class LookController {
 
  private:
   void enter(LookState s, const char* event, LookTick* out);
+  void poseErrors(LookTick* out) const;
 
   LookTiming timing_;
   MountFrame mount_;
@@ -119,6 +123,7 @@ class LookController {
   Vec3 bias_;
   float roll0_;
   float pitch0_;
+  float yaw_;
   Vec3 lastAccelBody_;
   Vec3 lastGyroBody_;
 };

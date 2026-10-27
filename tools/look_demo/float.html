@@ -12,7 +12,18 @@
 * { box-sizing: border-box; }
 html, body { margin: 0; background: var(--bg); color: var(--fg);
   font: 13px/1.4 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; }
-#panel { padding: 10px; max-width: 360px; }
+#panel { padding: 8px; width: 360px; max-width: 100%; display: flex; flex-direction: column; }
+#compact, #adjustToggle { flex: none; }
+#adjust { margin-top: 4px; }  /* the whole page scrolls; no cramped inner box */
+#adjustToggle { align-self: stretch; text-align: left; margin-top: 4px; }
+details { background: var(--panel); border-radius: 6px; margin-bottom: 5px; padding: 6px; }
+summary { cursor: pointer; font-weight: 600; }
+.fields { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 6px; }
+.field { min-width: 0; display: flex; flex-direction: column; align-items: stretch; gap: 2px; }
+.field.check { flex-direction: row; align-items: center; flex-wrap: wrap; }
+.field .unknown { color: var(--muted); font-size: 11px; }
+select { width: 100%; min-width: 0; padding: 3px; background: #0f1115; color: var(--fg); border: 1px solid var(--line); border-radius: 4px; font: inherit; }
+#profileStatus { margin-top: 5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .badge { padding: 2px 8px; border-radius: 4px; font-weight: 700; font-size: 15px; background: var(--muted); color: #fff; }
 .muted { color: var(--muted); font-size: 12px; }
@@ -27,20 +38,22 @@ button { font: inherit; padding: 4px 8px; border-radius: 4px; border: 1px solid 
 button:hover { border-color: var(--muted); }
 button.stop { border-color: var(--bad); }
 label { display: flex; align-items: center; gap: 6px; }
-.tune { display: grid; grid-template-columns: auto 64px auto 64px; gap: 4px 6px; align-items: center; }
 input[type=number], input[type=text] { width: 100%; font: inherit; padding: 2px 4px; border-radius: 4px;
   border: 1px solid var(--line); background: #0f1115; color: var(--fg); }
-#log { font: 11px/1.4 Menlo, Consolas, monospace; color: var(--muted); white-space: pre-wrap; min-height: 6.5em; }
-#hint { color: var(--warn); font-size: 12px; }
+#log { font: 11px/15px Menlo, Consolas, monospace; color: var(--muted); height: 60px; overflow: hidden; margin-top: 4px; }
+#log div { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#link, #front { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#hint { color: var(--warn); font-size: 12px; line-height: 16px; max-height: 48px; overflow: hidden; }
 </style>
 </head>
 <body>
 <div id="panel">
+<div id="compact">
   <div class="row">
     <span id="state" class="badge">未连接</span>
-    <span id="link" class="muted"></span>
     <button id="btnPip" style="margin-left:auto">弹出置顶悬浮窗</button>
   </div>
+  <div id="link" class="muted">等待本地桥</div>
   <div id="front" class="muted" style="margin-top:4px">前台: ?</div>
 
   <div class="box">
@@ -58,23 +71,27 @@ input[type=number], input[type=text] { width: 100%; font: inherit; padding: 2px 
     <button data-cmd="arm">启用</button>
     <button class="stop" data-cmd="x">停用 (Esc)</button>
     <button data-cmd="ack">确认故障</button>
-    <button data-cmd="get">刷新</button>
   </div>
   <label><input type="checkbox" id="chkHid">真实键鼠输出 (hid)</label>
   <label><input type="checkbox" id="chkGate" checked>只在 Minecraft 前台时输出</label>
 
-  <div class="tune box">
-    <span class="muted">起转角 °</span><input type="number" id="p_dead" step="0.5" min="0" max="12">
-    <span class="muted">确认 ms</span><input type="number" id="p_confirm" step="10" min="0" max="300">
-    <span class="muted">左右 kx</span><input type="number" id="p_kx" step="5" min="0" max="150">
-    <span class="muted">上下 ky</span><input type="number" id="p_ky" step="5" min="0" max="150">
-  </div>
-  <form id="cmdForm" class="row">
-    <input type="text" id="cmdIn" placeholder="命令，例如 act w 2000 / chan breath 0" autocomplete="off" style="flex:1;min-width:0">
-    <button type="submit">发送</button>
-  </form>
   <div id="hint"></div>
   <div id="log"></div>
+</div>
+<button id="adjustToggle" aria-expanded="false" aria-controls="adjust">调整 ▸</button>
+<div id="adjust" hidden>
+  <details open><summary>视角</summary><div id="lookFields" class="fields"></div></details>
+  <details><summary>摇杆</summary><div id="joyFields" class="fields"></div><button data-cmd="jspan" style="margin-top:6px">测量行程</button></details>
+  <details><summary>吹气/吸气</summary><div id="breathFields" class="fields"></div></details>
+  <details><summary>配置</summary>
+    <form id="cmdForm" class="row" style="margin:6px 0">
+      <input type="text" id="cmdIn" aria-label="串口命令" placeholder="命令，例如 get / chan breath 0" autocomplete="off" style="flex:1;min-width:0">
+      <button type="submit">发送</button>
+    </form>
+    <div class="row"><button data-cmd="get">刷新</button><button id="saveProfile">保存为默认</button><button id="clearProfile">清除默认</button></div>
+    <div id="profileStatus" class="muted" role="status">默认配置：读取中…</div>
+  </details>
+</div>
 </div>
 
 <script>
@@ -89,7 +106,7 @@ const STATE = {
   DISARMED: ['停用', '#8a8f98'], CALIBRATING: ['校准中 · 保持静止', '#d4a72c'],
   WAIT_NEUTRAL: ['等待回中', '#d4a72c'], ACTIVE: ['启用', '#2ea44f'], FAULT: ['故障 · 需确认', '#d73a49'],
 };
-let D = null, S = null, P = {}, keys = '-', btn = '0', front = null, frontName = '?';
+let D = null, S = null, P = {}, Q = {}, keys = '-', btn = '0', front = null, frontName = '?';
 let logLines = [], sumX = 0, sumY = 0, rateX = 0, rateY = 0, rateT = performance.now();
 let lastDraw = 0, faultWhy = '';
 // Why the board is latched in FAULT; the #E line scrolls out of the log fast.
@@ -99,9 +116,115 @@ const FAULT_WHY = {
 };
 
 function kv(parts) { const o = {}; for (const p of parts) { const i = p.indexOf('='); if (i > 0) o[p.slice(0, i)] = p.slice(i + 1); } return o; }
-function send(cmd) { fetch('/cmd', { method: 'POST', body: cmd }).catch(() => log('发送失败: ' + cmd)); }
+function send(cmd) { fetch('/cmd', { method: 'POST', body: cmd }).then((r) => { if (!r.ok) throw new Error(r.status); }).catch(() => log('发送失败: ' + cmd)); }
 function cmd(c) { send(c); if (c !== 'get') log('> ' + c); }
-function log(t) { logLines = logLines.concat(t).slice(-6); $('log').textContent = logLines.join('\n'); }
+function log(t) {
+  logLines = logLines.concat(t).slice(-4);
+  $('log').replaceChildren(...logLines.map((text) => { const row = document.createElement('div'); row.textContent = row.title = text; return row; }));
+}
+
+// A missing report stays visibly unknown; users can still choose a value.
+const SOURCES = [['0', '侧倾 roll'], ['1', '俯仰 pitch'], ['2', '转头 yaw·实验']];
+const FIELDS = [
+  ['look', 'hsrc', '左右来源', SOURCES], ['look', 'vsrc', '上下来源', SOURCES],
+  ['look', 'invx', '左右取反', 'check'], ['look', 'invy', '上下取反', 'check'],
+  ['look', 'kx', '左右增益 kx', 0.01], ['look', 'ky', '上下增益 ky', 0.01],
+  ['look', 'deadx', '左右起转角 °', 0.01], ['look', 'deady', '上下起转角 °', 0.01],
+  ['look', 'confirm', '确认 confirm (ms)', 1], ['look', 'hyst', '迟滞 hyst (°)', 0.01],
+  ['look', 'yawtau', '回零 yawtau (s)', 0.1],
+  ['joy', 'jonx', '左右触发 jonx', 0.001], ['joy', 'jony', '前后触发 jony', 0.001],
+  ['joy', 'joffx', '左右释放 joffx', 0.001], ['joy', 'joffy', '前后释放 joffy', 0.001],
+  ['joy', 'jswap', '交换 XY', 'check'], ['joy', 'jinvx', '摇杆 X 取反', 'check'], ['joy', 'jinvy', '摇杆 Y 取反', 'check'],
+  ['breath', 'pmode', '吹气模式', [['0', '按住'], ['1', '吹一下切换'], ['2', '连点']]],
+  ['breath', 'prep', '连点间隔 (ms)', 1, 'prep_ms'],
+  ['breath', 'bon', '吹气触发 bon', 1], ['breath', 'boff', '吹气释放 boff', 1],
+  ['breath', 'brel', '吹气释放 brel (ms)', 1, 'brel_ms'],
+  ['breath', 'bsign', '吹气读数取反', 'check'], ['breath', 'slock', '吹吸锁定 slock (ms)', 1, 'slock_ms'],
+  ['breath', 'sjump', '吸气跳跃', 'check'], ['breath', 'son', '吸气触发 son', 1], ['breath', 'soff', '吸气释放 soff', 1],
+  ['breath', 'sdis', '吸气停用 ms（0=不停用）', 1, 'sdis_ms'],
+];
+// Checkbox wire values; bsign is a sign (+1 / -1), not a flag.
+const CHECK_WIRE = { bsign: ['-1', '1'] };
+const checkOut = (key, on) => (CHECK_WIRE[key] || ['1', '0'])[on ? 0 : 1];
+const checkIn = (key, v) => Number(v) === Number((CHECK_WIRE[key] || ['1'])[0]);
+const edited = new Set();
+for (const [group, key, label, kind] of FIELDS) {
+  const row = document.createElement('label');
+  row.className = 'field' + (kind === 'check' ? ' check' : '');
+  const title = document.createElement('span'); title.textContent = label;
+  const el = document.createElement(Array.isArray(kind) ? 'select' : 'input'); el.id = 'p_' + key;
+  if (Array.isArray(kind)) {
+    const unknown = document.createElement('option'); unknown.value = ''; unknown.textContent = '—'; unknown.disabled = true; el.appendChild(unknown);
+    for (const [value, text] of kind) { const option = document.createElement('option'); option.value = value; option.textContent = text; el.appendChild(option); }
+    el.value = '';
+  } else if (kind === 'check') { el.type = 'checkbox'; el.indeterminate = true; }
+  else { el.type = 'number'; el.step = String(kind); el.placeholder = '—'; }
+  const missing = document.createElement('span'); missing.className = 'unknown'; missing.id = 'missing_' + key; missing.textContent = '—';
+  row.append(title, el, missing); $(group === 'joy' ? 'joyFields' : group + 'Fields').appendChild(row);
+  el.onchange = () => {
+    if (kind !== 'check' && (el.value === '' || !el.checkValidity() || !Number.isFinite(Number(el.value)))) return;
+    edited.add(key); el.indeterminate = false;
+    cmd(`set ${key} ${kind === 'check' ? checkOut(key, el.checked) : el.value}`);
+  };
+}
+function syncFields(group) {
+  const values = group === 'look' ? P : Q;
+  for (const [section, key, , kind, reported = key] of FIELDS) {
+    if ((group === 'look') !== (section === 'look')) continue;
+    const el = $('p_' + key), known = reported in values;
+    $('missing_' + key).textContent = known ? '' : '—';
+    if (el.ownerDocument.activeElement === el) continue;
+    if (known) {
+      if (kind === 'check') { el.checked = checkIn(key, values[reported]); el.indeterminate = false; }
+      else el.value = Array.isArray(kind) ? String(Number(values[reported])) : values[reported];
+    } else if (!edited.has(key)) {
+      if (kind === 'check') el.indeterminate = true;
+      else el.value = '';
+    }
+  }
+}
+function setAdjust(open) {
+  $('adjust').hidden = !open; $('adjustToggle').textContent = open ? '调整 ▾' : '调整 ▸';
+  $('adjustToggle').setAttribute('aria-expanded', String(open));
+}
+try { setAdjust(localStorage.getItem('mm.float.adjust') === '1'); } catch (e) {}
+$('adjustToggle').onclick = () => {
+  const open = $('adjust').hidden; setAdjust(open);
+  if (open) $('adjustToggle').scrollIntoView({ block: 'start', behavior: 'smooth' });
+  try { localStorage.setItem('mm.float.adjust', open ? '1' : '0'); } catch (e) {}
+};
+function profileStatus(text) { $('profileStatus').textContent = $('profileStatus').title = text; }
+function showProfile(body) {
+  const count = body.split('\n').filter((line) => line.trim()).length;
+  profileStatus(count ? `默认配置：已保存 ${count} 条，串口连接后回放` : '默认配置：未保存');
+}
+async function loadProfile() {
+  try {
+    const r = await fetch('/profile'); if (!r.ok) throw new Error(r.status);
+    const body = await r.text(); showProfile(body);
+    for (const line of body.split('\n')) { const match = line.match(/^fgate ([01])\s*$/); if (match) $('chkGate').checked = match[1] === '1'; }
+  } catch (e) { profileStatus('默认配置：读取失败 ' + e.message); }
+}
+async function saveProfile(clear) {
+  let body = '';
+  if (!clear) {
+    const lines = [];
+    for (const [, key, label, kind] of FIELDS) {
+      const el = $('p_' + key);
+      if ((kind === 'check' && el.indeterminate) || (kind !== 'check' && (el.value === '' || !el.checkValidity() || !Number.isFinite(Number(el.value))))) {
+        profileStatus('默认配置：请先补齐「' + label + '」'); return;
+      }
+      lines.push(`set ${key} ${kind === 'check' ? checkOut(key, el.checked) : el.value}`);
+    }
+    lines.push('fgate ' + ($('chkGate').checked ? 1 : 0)); body = lines.join('\n');
+  }
+  try {
+    const r = await fetch('/profile', { method: 'POST', body }); if (!r.ok) throw new Error(r.status);
+    showProfile(body);
+  } catch (e) { profileStatus('默认配置：保存失败 ' + e.message); }
+}
+$('saveProfile').onclick = () => saveProfile(false);
+$('clearProfile').onclick = () => saveProfile(true);
 
 function handle(line) {
   if (line.startsWith('D,')) {
@@ -114,13 +237,11 @@ function handle(line) {
   switch (parts[0]) {
     case '#P':
       P = kv(parts.slice(1));
-      $('chkHid').checked = P.hid === '1';
+      if ('hid' in P && $('chkHid').ownerDocument.activeElement !== $('chkHid')) $('chkHid').checked = P.hid === '1';
       if ('fgate' in P && (P.fgate === '1') !== $('chkGate').checked) send('fgate ' + ($('chkGate').checked ? 1 : 0));
-      for (const k of ['dead', 'confirm', 'kx', 'ky']) {
-        const el = $('p_' + k);
-        if (k in P && el.ownerDocument.activeElement !== el) el.value = +P[k];
-      }
+      syncFields('look');
       break;
+    case '#Q': Q = kv(parts.slice(1)); syncFields('channels'); break;
     case '#K': { const i = kv(parts.slice(2)); keys = i.keys || '-'; btn = i.left || '0'; break; }
     case '#F': log('前台门控: ' + (kv(parts.slice(2)).front === '1' ? '放行' : '拦截')); break;
     case '#E':
@@ -129,6 +250,7 @@ function handle(line) {
     case '#OK': case '#ERR': case '#C': log(line); break;
     case '#BRIDGE':
       if (parts[1] === 'front') { frontName = parts[2]; front = parts[3] === '1'; }
+      else if (parts[1] === 'profile') { log('默认配置已回放 ' + parts[2] + ' 条'); send('get'); }
       else {
         $('link').textContent = '板子 ' + parts.slice(1, 3).join(' ');
         if (parts[1] === 'connected') { send('get'); send('fgate ' + ($('chkGate').checked ? 1 : 0)); }
@@ -140,9 +262,9 @@ function handle(line) {
 function render() {
   const now = performance.now();
   if (now - rateT >= 1000) { rateX = sumX; rateY = sumY; sumX = sumY = 0; rateT = now; }
-  if (D) { const [t, c] = STATE[D[3]] || [D[3], '#8a8f98']; $('state').textContent = t; $('state').style.background = c; }
+  if (D) { const [t, c] = STATE[D[3]] || [D[3], '#8a8f98']; $('state').textContent = t; $('state').title = D[3] === 'FAULT' ? faultWhy : ''; $('state').style.background = c; }
   const gate = $('chkGate').checked;
-  if (front === null) { $('front').textContent = '前台: 未知（前台检测需要 macOS 上的 bridge.py）'; $('front').style.color = ''; }
+  if (front === null) { $('front').textContent = `前台: 未知（需 macOS 桥） 门控${gate ? '开' : '关'}`; $('front').style.color = ''; }
   else {
     $('front').textContent = `前台: ${front ? '✓ Minecraft' : '✗ ' + frontName}    门控${gate ? '开' : '关'}`;
     $('front').style.color = front ? 'var(--ok)' : (gate && $('chkHid').checked ? 'var(--warn)' : '');
@@ -165,24 +287,25 @@ function render() {
   } else if (D && D[20] === '1' && gate && front === false) {
     hint = '真实输出已开，但 Minecraft 不在前台：按键和视角被拦截（点回游戏窗口即可）';
   }
-  $('hint').textContent = hint;
+  $('hint').textContent = $('hint').title = hint;
 }
 
 function drawLook() {
   const cv = $('cv'), c = cv.getContext('2d'), w = cv.width, cx = w / 2, span = 25, sc = (w / 2 - 6) / span;
   c.clearRect(0, 0, w, w);
-  const dead = +(P.dead || 6), rel = Math.max(0, dead - +(P.hyst || 2));
+  const deadx = +(P.deadx ?? P.dead ?? 6), deady = +(P.deady ?? P.dead ?? 6), hyst = +(P.hyst ?? 2);
+  const relx = Math.max(0, deadx - hyst), rely = Math.max(0, deady - hyst);
   c.strokeStyle = '#2a2d35'; c.beginPath(); c.moveTo(cx, 4); c.lineTo(cx, w - 4); c.moveTo(4, cx); c.lineTo(w - 4, cx); c.stroke();
-  for (const [e, col] of [[dead, '#4a5d7d'], [rel, '#2f3a4f']]) { c.strokeStyle = col; c.strokeRect(cx - e * sc, cx - e * sc, 2 * e * sc, 2 * e * sc); }
+  for (const [x, y, col] of [[deadx, deady, '#4a5d7d'], [relx, rely, '#2f3a4f']]) { c.strokeStyle = col; c.strokeRect(cx - x * sc, cx - y * sc, 2 * x * sc, 2 * y * sc); }
   if (!D) return;
   const re = +D[14], pe = +D[15], vx = +D[16], vy = +D[17];
   const clamp = (v) => Math.max(-span, Math.min(span, v));
   c.fillStyle = (vx || vy) ? '#2ea44f' : '#8a8f98';
   c.beginPath(); c.arc(cx + clamp(re) * sc, cx + clamp(pe) * sc, 5, 0, 2 * Math.PI); c.fill();
   $('look').textContent =
-    `roll 误差 ${re >= 0 ? '+' : ''}${re.toFixed(1)}°\npitch误差 ${pe >= 0 ? '+' : ''}${pe.toFixed(1)}°\n` +
+    `左右误差 ${re >= 0 ? '+' : ''}${re.toFixed(1)}°\n上下误差 ${pe >= 0 ? '+' : ''}${pe.toFixed(1)}°\n` +
     `速度 ${vx.toFixed(0)} / ${vy.toFixed(0)} c/s\n每秒 ${rateX} / ${rateY} ${D[20] === '1' ? 'HID' : '虚拟'}\n` +
-    `起转 ${dead}° 确认 ${P.confirm ?? '?'}ms`;
+    `起转 左右${deadx}° / 上下${deady}°\n确认 ${P.confirm ?? '—'} ms`;
 }
 
 // ---------------------------------------------------------------- wiring
@@ -199,7 +322,6 @@ function connect() {
 panel.querySelectorAll('button[data-cmd]').forEach((b) => { b.onclick = () => cmd(b.dataset.cmd); });
 $('chkHid').onchange = () => cmd('hid ' + ($('chkHid').checked ? 1 : 0));
 $('chkGate').onchange = () => cmd('fgate ' + ($('chkGate').checked ? 1 : 0));
-for (const k of ['dead', 'confirm', 'kx', 'ky']) $('p_' + k).onchange = (e) => cmd(`set ${k} ${e.target.value}`);
 $('cmdForm').onsubmit = (e) => { e.preventDefault(); const v = $('cmdIn').value.trim(); if (v) cmd(v); $('cmdIn').value = ''; };
 function onKey(e) { if (e.key === 'Escape') cmd('x'); }
 document.addEventListener('keydown', onKey);
@@ -210,7 +332,7 @@ $('btnPip').onclick = async () => {
   if (!('documentPictureInPicture' in window)) { log('此浏览器不支持置顶悬浮窗，请用 Chrome 或 Edge'); return; }
   let pip;
   try {
-    pip = await documentPictureInPicture.requestWindow({ width: 360, height: 640 });
+    pip = await documentPictureInPicture.requestWindow({ width: 360, height: 560 });
   } catch (e) {
     log('悬浮窗打开失败：' + e.message + '。请在桌面版 Chrome / Edge 中打开本页');
     return;
@@ -229,7 +351,7 @@ const app = window.webkit && window.webkit.messageHandlers && window.webkit.mess
 if (app) {
   $('btnPip').style.display = 'none';
   panel.addEventListener('focusin', (e) => {
-    if (e.target.matches('input[type=text], input[type=number]')) app.postMessage('keyboard');
+    if (e.target.matches('input[type=text], input[type=number], select')) app.postMessage('keyboard');
   });
   panel.addEventListener('focusout', () => app.postMessage('release'));
   panel.addEventListener('keydown', (e) => {
@@ -237,7 +359,7 @@ if (app) {
   });
 }
 window.addEventListener('beforeunload', () => { navigator.sendBeacon('/cmd', 'disarm'); });
-connect();
+loadProfile().finally(connect);
 render();
 </script>
 </body>

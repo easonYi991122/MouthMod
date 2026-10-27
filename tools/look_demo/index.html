@@ -172,13 +172,13 @@ textarea { width: 100%; height: 120px; background: var(--panel2); color: var(--t
   <div class="charts">
     <div>
       <canvas id="tilt" class="chart"></canvas>
-      <div class="legend" style="margin-top:4px"><span>横轴 roll 误差 · 纵轴 pitch 误差（°）</span></div>
+      <div class="legend" style="margin-top:4px"><span>横轴左右误差 · 纵轴上下误差（°）</span></div>
     </div>
     <div>
       <canvas id="series" class="chart"></canvas>
       <div class="legend" style="margin-top:4px">
-        <span><i style="background:var(--roll)"></i>roll 误差</span>
-        <span><i style="background:var(--pitch)"></i>pitch 误差</span>
+        <span><i style="background:var(--roll)"></i>左右误差</span>
+        <span><i style="background:var(--pitch)"></i>上下误差</span>
         <span>下图：vx / vy (counts/s)</span>
       </div>
     </div>
@@ -248,7 +248,9 @@ $('chkInvx').onchange = () => setParam('invx', $('chkInvx').checked ? 1 : 0);
 $('chkInvy').onchange = () => setParam('invy', $('chkInvy').checked ? 1 : 0);
 
 function setParam(key, value) {
-  P[key] = value; saveParams(); syncControls();
+  P[key] = value;
+  if (key === 'dead') { P.deadx = value; P.deady = value; }
+  saveParams(); syncControls();
   send(`set ${key} ${value}`);
 }
 function pushAll() { for (const k of Object.keys(DEFAULTS)) send(`set ${k} ${P[k]}`); }
@@ -394,6 +396,11 @@ function handleLine(line) {
     case '#I': fw = parseKV(parts.slice(1)); log(line); break;
     case '#P': {
       const kv = parseKV(parts.slice(1));
+      for (const k of [...Object.keys(DEFAULTS), 'deadx', 'deady', 'hsrc', 'vsrc', 'yawtau']) {
+        if (k in kv && Number.isFinite(Number(kv[k]))) P[k] = Number(kv[k]);
+      }
+      if ('deadx' in kv) P.dead = Number(kv.deadx); // legacy shared-angle control
+      syncControls();
       if (kv.mount) { const m = kv.mount.match(/^([+-][XYZ])([+-][XYZ])$/); if (m) { $('selUp').value = m[1]; $('selFwd').value = m[2]; } }
       $('chkHid').checked = kv.hid === '1';
       break;
@@ -613,28 +620,28 @@ function setupCanvas(c) {
   if (c.width !== Math.round(w * dpr) || c.height !== Math.round(h * dpr)) { c.width = Math.round(w * dpr); c.height = Math.round(h * dpr); }
   const ctx = c.getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0); return [ctx, w, h];
 }
-function engageEdge() { return P.hmode === 1 ? P.dead + P.hyst : P.dead; }
-function releaseEdge() { return Math.max(0, P.hmode === 1 ? P.dead : P.dead - P.hyst); }
+function engageEdge(axis = 'x') { const dead = P[axis === 'x' ? 'deadx' : 'deady'] ?? P.dead; return P.hmode === 1 ? dead + P.hyst : dead; }
+function releaseEdge(axis = 'x') { const dead = P[axis === 'x' ? 'deadx' : 'deady'] ?? P.dead; return Math.max(0, P.hmode === 1 ? dead : dead - P.hyst); }
 const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
 
 function drawTilt() {
   const [ctx, w, h] = setupCanvas($('tilt'));
   ctx.clearRect(0, 0, w, h);
   const range = Math.max(30, P.sat + 5), s = (w / 2 - 10) / range, cx = w / 2, cy = h / 2;
-  const X = (d) => cx + d * s, Y = (d) => cy + d * s;  // pitch + (nose down) drawn downward
+  const X = (d) => cx + d * s, Y = (d) => cy + d * s;  // mapped vertical error is drawn downward
   ctx.fillStyle = 'rgba(90,169,255,0.08)';
-  const e = engageEdge(), r = releaseEdge();
-  ctx.fillRect(X(-e), 0, 2 * e * s, h); ctx.fillRect(0, Y(-e), w, 2 * e * s);
-  ctx.fillStyle = 'rgba(62,207,142,0.18)'; ctx.fillRect(X(-e), Y(-e), 2 * e * s, 2 * e * s);
+  const ex = engageEdge('x'), ey = engageEdge('y'), rx = releaseEdge('x'), ry = releaseEdge('y');
+  ctx.fillRect(X(-ex), 0, 2 * ex * s, h); ctx.fillRect(0, Y(-ey), w, 2 * ey * s);
+  ctx.fillStyle = 'rgba(62,207,142,0.18)'; ctx.fillRect(X(-ex), Y(-ey), 2 * ex * s, 2 * ey * s);
   ctx.strokeStyle = css('--line'); ctx.lineWidth = 1;
   ctx.beginPath(); ctx.moveTo(cx, 0); ctx.lineTo(cx, h); ctx.moveTo(0, cy); ctx.lineTo(w, cy); ctx.stroke();
   ctx.setLineDash([3, 3]); ctx.strokeStyle = '#5aa9ff88';
-  ctx.strokeRect(X(-r), Y(-r), 2 * r * s, 2 * r * s);
+  ctx.strokeRect(X(-rx), Y(-ry), 2 * rx * s, 2 * ry * s);
   ctx.strokeStyle = '#ff5c5c88'; ctx.strokeRect(X(-P.sat), Y(-P.sat), 2 * P.sat * s, 2 * P.sat * s);
   ctx.setLineDash([]);
   ctx.fillStyle = css('--muted'); ctx.font = '10px sans-serif';
   ctx.fillText(`饱和 ±${P.sat}°`, X(-P.sat) + 3, Y(-P.sat) + 11);
-  ctx.fillText('左倾', 4, cy - 4); ctx.fillText('右倾', w - 26, cy - 4); ctx.fillText('抬头', cx + 4, 12); ctx.fillText('低头', cx + 4, h - 4);
+  ctx.fillText('左', 4, cy - 4); ctx.fillText('右', w - 16, cy - 4); ctx.fillText('上', cx + 4, 12); ctx.fillText('下', cx + 4, h - 4);
   const n = Math.min(hist.length, 60);
   for (let i = hist.length - n; i < hist.length; i++) {
     const d = hist[i], a = (i - (hist.length - n)) / n;

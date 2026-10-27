@@ -1,5 +1,4 @@
-// Head tilt -> mouse velocity (spec: dx = kx*(roll-roll0), dy = ky*(pitch-pitch0);
-// dead-band +/-3 deg, hysteresis 2 deg, saturation +/-20 deg, no yaw).
+// Mapped head-angle errors -> mouse velocity, with per-axis dead bands.
 //
 // Units: k is HID counts per second per degree of tilt. Velocity is turned
 // into integer HID deltas with the real elapsed time (DeltaAccumulator), so
@@ -23,7 +22,10 @@
 struct MouseLookParams {
   float kxCpsPerDeg;
   float kyCpsPerDeg;
-  float deadbandDeg;
+  float deadbandDeg[2];  // horizontal, vertical
+  uint8_t hsrc;          // 0 roll, 1 pitch, 2 yaw (selected by LookController)
+  uint8_t vsrc;
+  float yawTauS;         // leaky yaw integrator time constant; 0 = no leak
   float hysteresisDeg;
   float saturationDeg;
   uint8_t hystMode;
@@ -47,11 +49,12 @@ class LookAxis {
   }
   // Returns velocity in counts/s for a tilt error in degrees; dtS is the
   // time since the previous update (for the engage confirmation).
-  float update(float errDeg, float k, const MouseLookParams& p, float dtS);
+  float update(float errDeg, float k, const MouseLookParams& p, float dtS,
+               unsigned axis = 0);
   bool engaged() const { return engaged_; }
 
-  static float engageEdge(const MouseLookParams& p);
-  static float releaseEdge(const MouseLookParams& p);
+  static float engageEdge(const MouseLookParams& p, unsigned axis = 0);
+  static float releaseEdge(const MouseLookParams& p, unsigned axis = 0);
 
  private:
   bool engaged_;
@@ -72,8 +75,8 @@ class MouseLookMapper {
   const MouseLookParams& params() const { return params_; }
   void reset();
 
-  // rollErr > 0: head rolled right; pitchErr > 0: head pitched nose-down.
-  LookVelocity update(float rollErrDeg, float pitchErrDeg, float dtS = 0.01f);
+  // Source selection happens in LookController; inversion happens here.
+  LookVelocity update(float xErrDeg, float yErrDeg, float dtS = 0.01f);
 
  private:
   MouseLookParams params_;

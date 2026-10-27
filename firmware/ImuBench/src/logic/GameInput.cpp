@@ -5,7 +5,7 @@
 GameIntent noGameIntent() {
   GameIntent g;
   g.forward = g.back = g.left = g.right = false;
-  g.jump = g.use = false;
+  g.jump = g.use = g.sip = false;
   return g;
 }
 
@@ -14,6 +14,9 @@ GameInputParams defaultGameInputParams() {
   // Longer than one 50 ms game tick plus a frame, so a tap is never missed.
   // Provisional (docs/imu-decisions.md D16); tune in game.
   p.minPressUs = 60000;
+  p.puffMode = 0;
+  p.puffRepeatMs = 600;
+  p.sipJump = true;
   return p;
 }
 
@@ -22,6 +25,17 @@ GameInput::GameInput() : params_(defaultGameInputParams()) {
   sentButtons_ = 0;
   droppedEdges_ = 0;
   releaseAll();
+}
+
+void GameInput::setParams(const GameInputParams& p) {
+  if (params_.puffMode != p.puffMode) {
+    cancel(&use_);
+    useToggled_ = repeatEnabled_ = useLevel_ = false;
+  }
+  params_ = p;
+  if (params_.puffMode > 2) params_.puffMode = 2;
+  if (params_.puffRepeatMs < 40) params_.puffRepeatMs = 40;
+  if (params_.puffRepeatMs > 2000) params_.puffRepeatMs = 2000;
 }
 
 void GameInput::releaseAll() {
@@ -33,7 +47,8 @@ void GameInput::releaseAll() {
   idle.downUs = 0;
   jump_ = idle;
   use_ = idle;
-  useLevel_ = false;
+  useLevel_ = useToggled_ = repeatEnabled_ = false;
+  sipPrevLevel_ = true;
   forceKeyboard_ = true;
   forceMouse_ = true;
   lastSlot_ = HID_MOUSE;  // keyboard release goes first
@@ -59,19 +74,45 @@ void GameInput::cancel(Pulse* p) {
 void GameInput::update(uint64_t nowUs, const GameIntent& in, bool allowActions) {
   if (!allowActions) {
     move_ = noGameIntent();
-    useLevel_ = false;
+    useLevel_ = useToggled_ = repeatEnabled_ = false;
+    sipPrevLevel_ = true;
     cancel(&jump_);
     cancel(&use_);
     return;
   }
   move_ = in;
-  move_.jump = move_.use = false;
+  move_.jump = move_.use = move_.sip = false;
 
-  if (in.jump && !jump_.prevLevel) edge(&jump_);
+  const bool biteEdge = in.jump && !jump_.prevLevel;
+  const bool sipEdge = params_.sipJump && in.sip && !sipPrevLevel_;
+  if (biteEdge || sipEdge) edge(&jump_);
   jump_.prevLevel = in.jump;
-  if (in.use && !use_.prevLevel) edge(&use_);
+  sipPrevLevel_ = in.sip;
+
+  const bool puffEdge = in.use && !use_.prevLevel;
   use_.prevLevel = in.use;
-  useLevel_ = in.use;
+  if (params_.puffMode == 1) {
+    if (puffEdge) {
+      useToggled_ = !useToggled_;
+      if (useToggled_) {
+        if (use_.state == P_IDLE || use_.state == P_WANT_UP) edge(&use_);
+      } else {
+        use_.queued = false;
+      }
+    }
+    useLevel_ = useToggled_;
+  } else {
+    if (puffEdge) edge(&use_);
+    if (!in.use) repeatEnabled_ = false;
+    else if (puffEdge) repeatEnabled_ = true;
+    useLevel_ = params_.puffMode == 0 && in.use;
+    // Only IDLE can repeat: the preceding release must reach the endpoint
+    // first, even when prep is shorter than the minimum press hold.
+    if (params_.puffMode == 2 && repeatEnabled_ && use_.state == P_IDLE &&
+        nowUs - use_.downUs >= static_cast<uint64_t>(params_.puffRepeatMs) * 1000U) {
+      edge(&use_);
+    }
+  }
 
   // Space is a tap: up after the minimum hold even if the bite continues.
   if (jump_.state == P_DOWN && nowUs - jump_.downUs >= params_.minPressUs) {

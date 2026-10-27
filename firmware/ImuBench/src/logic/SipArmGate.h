@@ -11,6 +11,20 @@
 
 #include <stdint.h>
 
+// D34: runtime armed-sip delay; zero disables disarming. Time comes from
+// PressureChannel so its existing sip threshold/hold semantics are retained.
+class SipDisarmGate {
+ public:
+  explicit SipDisarmGate(uint32_t holdMs = 1500U)
+      : holdMs_(holdMs), fired_(false) {}
+  void setHoldMs(uint32_t ms) { holdMs_ = ms; }
+  uint32_t holdMs() const { return holdMs_; }
+  bool update(bool armed, bool sipActive, uint64_t sipHeldUs);
+ private:
+  uint32_t holdMs_;
+  bool fired_;
+};
+
 class SipArmGate {
  public:
   explicit SipArmGate(uint32_t holdUs = 1000000U);

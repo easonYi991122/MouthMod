@@ -37,6 +37,7 @@ LookController::LookController()
       bias_(makeVec3(0.0f, 0.0f, 0.0f)),
       roll0_(0.0f),
       pitch0_(0.0f),
+      yaw_(0.0f),
       lastAccelBody_(makeVec3(0.0f, 0.0f, 0.0f)),
       lastGyroBody_(makeVec3(0.0f, 0.0f, 0.0f)) {
   timing_.imuTimeoutUs = 100000U;
@@ -65,10 +66,22 @@ void LookController::enter(LookState s, const char* event, LookTick* out) {
       out->releaseAll = true;
     }
   }
+  if (s == LOOK_CALIBRATING || s == LOOK_ACTIVE) yaw_ = 0.0f;
   if (s == LOOK_CALIBRATING) {
     calibration_.cancel();
   }
   neutralTiming_ = false;
+}
+
+void LookController::poseErrors(LookTick* out) const {
+  out->rollDeg = filter_.rollDeg();
+  out->pitchDeg = filter_.pitchDeg();
+  out->rollErrDeg = calibrated_ ? out->rollDeg - roll0_ : 0.0f;
+  out->pitchErrDeg = calibrated_ ? out->pitchDeg - pitch0_ : 0.0f;
+  const float errors[3] = {out->rollErrDeg, out->pitchErrDeg,
+                          calibrated_ ? yaw_ : 0.0f};
+  out->lookXErrDeg = errors[mapper_.params().hsrc];
+  out->lookYErrDeg = errors[mapper_.params().vsrc];
 }
 
 LookTick LookController::tick(uint64_t nowUs, const ImuInput& imu,
@@ -97,6 +110,18 @@ LookTick LookController::tick(uint64_t nowUs, const ImuInput& imu,
                          : 0.0f;
     if (dt > 0.0f) {
       filter_.update(a, g, dt);
+      // Body axes are forward/left/up: rightward head turn is negative Z.
+      // Match the filter's gap guard; never integrate across a stale sample.
+      if (dt <= ComplementaryFilter::kMaxDtS) {
+        const float rate = -g.z;
+        const float tau = mapper_.params().yawTauS;
+        if (tau > 0.0f) {
+          const float leak = -expm1f(-dt / tau);
+          yaw_ += (rate * tau - yaw_) * leak;
+        } else {
+          yaw_ += rate * dt;
+        }
+      }
     } else {
       filter_.seed(a);
     }
@@ -142,6 +167,7 @@ LookTick LookController::tick(uint64_t nowUs, const ImuInput& imu,
     calibrated_ = false;
     bias_ = makeVec3(0.0f, 0.0f, 0.0f);
     filter_.reset();
+    yaw_ = 0.0f;
     mountChanged_ = false;
   }
   disarmRequested_ = false;
@@ -167,6 +193,7 @@ LookTick LookController::tick(uint64_t nowUs, const ImuInput& imu,
       roll0_ = r.roll0Deg;
       pitch0_ = r.pitch0Deg;
       calibrated_ = true;
+      yaw_ = 0.0f;
       filter_.seed(r.meanAccelG);
       enter(LOOK_WAIT_NEUTRAL, "cal_done", &out);
     } else if (cs != CAL_COLLECTING) {
@@ -174,15 +201,13 @@ LookTick LookController::tick(uint64_t nowUs, const ImuInput& imu,
     }
   }
 
-  out.rollDeg = filter_.rollDeg();
-  out.pitchDeg = filter_.pitchDeg();
-  out.rollErrDeg = calibrated_ ? out.rollDeg - roll0_ : 0.0f;
-  out.pitchErrDeg = calibrated_ ? out.pitchDeg - pitch0_ : 0.0f;
+  poseErrors(&out);
 
   if (state_ == LOOK_WAIT_NEUTRAL) {
-    const float edge = LookAxis::engageEdge(mapper_.params());
-    const bool neutral = otherNeutral_ && fabsf(out.rollErrDeg) < edge &&
-                         fabsf(out.pitchErrDeg) < edge;
+    const MouseLookParams& p = mapper_.params();
+    const bool neutral = otherNeutral_ &&
+        fabsf(out.lookXErrDeg) < LookAxis::engageEdge(p, 0) &&
+        fabsf(out.lookYErrDeg) < LookAxis::engageEdge(p, 1);
     if (!neutral) {
       neutralTiming_ = false;
     } else if (!neutralTiming_) {
@@ -195,12 +220,14 @@ LookTick LookController::tick(uint64_t nowUs, const ImuInput& imu,
     }
   }
 
+  poseErrors(&out);  // entering ACTIVE resets yaw before this tick maps it
+
   // 6. Output.
   if (state_ == LOOK_ACTIVE) {
     float dtS = static_cast<float>(nowUs - lastMapUs_) * 1e-6f;
     if (dtS > 0.1f) dtS = 0.1f;  // a stall must not count as a long hold
     lastMapUs_ = nowUs;
-    out.velocity = mapper_.update(out.rollErrDeg, out.pitchErrDeg, dtS);
+    out.velocity = mapper_.update(out.lookXErrDeg, out.lookYErrDeg, dtS);
   }
   out.state = state_;
   return out;

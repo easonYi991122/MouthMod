@@ -51,6 +51,26 @@ void test_joystick_directions_and_hysteresis() {
   assert(j.right() && j.back() && !j.neutral());
 }
 
+void test_joystick_per_axis_thresholds() {
+  JoystickMapper j = centeredStick();
+  JoystickParams p = j.params();
+  p.onNorm[0] = 0.12f; p.onNorm[1] = 0.30f;
+  p.offNorm[0] = 0.08f; p.offNorm[1] = 0.20f;
+  j.setParams(p);
+  hold(&j, 2150, 2150);
+  assert(j.right() && !j.back());
+  hold(&j, 2350, 2350);
+  assert(j.right() && j.back());
+  hold(&j, 2150, 2150);
+  assert(j.right() && !j.back() && !j.neutral());
+  hold(&j, 2070, 2150);
+  assert(!j.right() && !j.back() && j.neutral());
+  p.swapXY = true;
+  j.setParams(p);
+  hold(&j, 2150, 2070);  // output X .07, output Y .15; both below on
+  assert(!j.right() && !j.back() && j.neutral());
+}
+
 void test_joystick_half_axis_spans() {
   JoystickMapper j = centeredStick();
   JoystickParams p = j.params();
@@ -218,6 +238,32 @@ bool sipFor(SipArmGate* g, int fromMs, int toMs, bool disarmed = true,
   return fired;
 }
 
+void test_sip_disarm_runtime_timing_and_zero() {
+  SipDisarmGate d;
+  SipArmGate a;
+  assert(d.holdMs() == 1500);
+  a.update(true, true, false, 0);
+  assert(!d.update(true, true, 1499999));
+  assert(!a.update(false, true, true, 1499999));
+  assert(d.update(true, true, 1500000));
+  assert(!d.update(true, true, 2000000));  // once per sip
+  assert(!a.update(true, true, true, 3000000));  // same sip never re-arms
+  d.update(false, false, 0);
+  a.update(true, true, false, 0);
+  assert(a.update(true, true, true, 1000000));  // new long sip still arms
+  d.setHoldMs(250);
+  assert(!d.update(true, true, 249999));
+  assert(d.update(true, true, 250000));
+  d.update(true, false, 0);
+  d.setHoldMs(0);
+  assert(!d.update(true, true, 0));
+  assert(!d.update(true, true, 10000000000ULL));
+  d.setHoldMs(1000);
+  assert(d.update(true, true, 10000000000ULL));  // live update
+  d.update(false, false, 0);
+  assert(!d.update(false, true, 5000000));  // disarmed does not fire
+}
+
 void test_sip_arm_gate() {
   SipArmGate g;
   // Sip already held at power-up: ignored until released.
@@ -256,7 +302,9 @@ void test_sip_arm_gate() {
 }  // namespace
 
 void run_channel_tests() {
+  test_sip_disarm_runtime_timing_and_zero();
   test_sip_arm_gate();
+  test_joystick_per_axis_thresholds();
   test_hx710b_sign_extension();
   test_joystick_directions_and_hysteresis();
   test_joystick_half_axis_spans();

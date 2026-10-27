@@ -169,6 +169,7 @@ void test_still_calibration() {
 void test_mapper_inner_hysteresis_spec_velocity() {
   MouseLookMapper m;
   MouseLookParams p = defaultMouseLookParams();
+  p.deadbandDeg[0] = p.deadbandDeg[1] = 3.0f;
   p.kxCpsPerDeg = 10;
   p.kyCpsPerDeg = 20;
   m.setParams(p);
@@ -190,6 +191,7 @@ void test_mapper_inner_hysteresis_spec_velocity() {
 void test_mapper_outer_and_ramp_modes_and_invert() {
   MouseLookMapper m;
   MouseLookParams p = defaultMouseLookParams();
+  p.deadbandDeg[0] = p.deadbandDeg[1] = 3.0f;
   p.kxCpsPerDeg = 10;
   p.hystMode = 1;  // engage 5, release 3
   p.velMode = 1;   // ramp from release edge
@@ -210,7 +212,7 @@ void test_mapper_engage_confirmation() {
   MouseLookMapper m;
   MouseLookParams p = defaultMouseLookParams();
   p.kxCpsPerDeg = 10;
-  p.deadbandDeg = 6;   // engage 6, release 4
+  p.deadbandDeg[0] = p.deadbandDeg[1] = 6;   // engage 6, release 4
   p.velMode = 1;
   p.engageConfirmS = 0.08f;
   m.setParams(p);
@@ -231,6 +233,7 @@ void test_mapper_engage_confirmation() {
 
 void test_sanitize() {
   MouseLookParams p = defaultMouseLookParams();
+  p.deadbandDeg[0] = p.deadbandDeg[1] = 3.0f;
   p.kxCpsPerDeg = -5;
   p.saturationDeg = 2;  // below engage edge
   p.velMode = 7;
@@ -310,11 +313,11 @@ void test_controller_full_arm_flow_and_mapping_sign() {
   assert(s.c.calibrated());
   assert(near(s.c.gyroBiasDps().x, 0.4f, 1e-3f));
   // Tilt right / nose down -> turn right / look down after the filter settles.
-  LookTick k = s.runStill(200, 10, 6);
+  LookTick k = s.runStill(200, 10, 8);
   assert(k.state == LOOK_ACTIVE);
   assert(k.velocity.vxCps > 0 && k.velocity.vyCps > 0);
   assert(near(k.rollErrDeg, 10, 0.2f));
-  k = s.runStill(200, -10, -6);
+  k = s.runStill(200, -10, -8);
   assert(k.velocity.vxCps < 0 && k.velocity.vyCps < 0);
   // Back to neutral stops the camera.
   k = s.runStill(200, 0, 0);
@@ -323,6 +326,9 @@ void test_controller_full_arm_flow_and_mapping_sign() {
 
 void test_controller_neutral_gate() {
   Sim s;
+  MouseLookParams p = s.c.lookParams();
+  p.deadbandDeg[0] = p.deadbandDeg[1] = 3;  // original gate scenario
+  s.c.setLookParams(p);
   s.c.requestArm();
   s.step(0, 0);
   s.runStill(305);
@@ -421,6 +427,116 @@ void test_controller_cal_motion_returns_disarmed() {
   assert(!s.c.calibrated());
 }
 
+void test_look_sources_swap_and_same_source() {
+  Sim s;
+  arm_to_active(&s);
+  MouseLookParams p = s.c.lookParams();
+  p.hsrc = 1; p.vsrc = 0;
+  p.invertX = true;
+  s.c.setLookParams(p);
+  LookTick k = s.runStill(400, 10, -12);
+  assert(near(k.lookXErrDeg, -12, 0.1f));
+  assert(near(k.lookYErrDeg, 10, 0.1f));
+  assert(k.velocity.vxCps > 0 && k.velocity.vyCps > 0);
+  p.vsrc = 1; p.invertX = false;
+  s.c.setLookParams(p);
+  k = s.step(10, -12);
+  assert(k.lookXErrDeg == k.lookYErrDeg);
+  assert(k.velocity.vxCps < 0 && k.velocity.vyCps < 0);
+}
+
+void test_yaw_integration_leak_and_reset() {
+  Sim s;
+  MouseLookParams p = s.c.lookParams();
+  p.hsrc = p.vsrc = 2; p.yawTauS = 0;
+  s.c.setLookParams(p);
+  for (int i = 0; i < 20; ++i) s.step(0, 0, true, makeVec3(0, 0, -10));
+  assert(s.c.yawDeg() > 1);
+  s.c.requestArm();
+  s.step(0, 0);
+  assert(s.c.yawDeg() == 0);  // calibration start
+  // Yaw accumulates during calibration, but the completed calibration resets it.
+  LookTick k;
+  do { k = s.step(0, 0); } while (k.state == LOOK_CALIBRATING);
+  assert(k.state == LOOK_WAIT_NEUTRAL && s.c.yawDeg() == 0);
+  s.c.setOtherInputsNeutral(false);
+  for (int i = 0; i < 10; ++i) s.step(0, 0, true, makeVec3(0.4f, -0.2f, -1.9f));
+  assert(near(s.c.yawDeg(), 0.2f, 0.001f));  // bias-corrected -Z, right positive
+  s.c.setOtherInputsNeutral(true);
+  do { k = s.step(0, 0); } while (k.state == LOOK_WAIT_NEUTRAL);
+  assert(k.state == LOOK_ACTIVE && s.c.yawDeg() == 0);
+  assert(k.lookXErrDeg == 0 && k.lookYErrDeg == 0);
+  for (int i = 0; i < 100; ++i)
+    k = s.step(0, 0, true, makeVec3(0.4f, -0.2f, -9.9f));
+  assert(near(s.c.yawDeg(), 10, 0.001f));
+  assert(near(k.lookXErrDeg, 10, 0.001f) && k.lookXErrDeg == k.lookYErrDeg);
+  s.runStill(100);
+  assert(near(s.c.yawDeg(), 10, 0.001f));  // tau 0: no leak
+  p.yawTauS = 1;
+  s.c.setLookParams(p);
+  s.runStill(100);
+  assert(near(s.c.yawDeg(), 10 * std::exp(-1.0f), 0.002f));
+  // Exact constant-rate leaky integration, independent of sample count.
+  for (int i = 0; i < 100; ++i)
+    s.step(0, 0, true, makeVec3(0.4f, -0.2f, -9.9f));
+  const float expected = 10 * std::exp(-2.0f) + 10 * (1 - std::exp(-1.0f));
+  assert(near(s.c.yawDeg(), expected, 0.003f));
+
+  LookController mounted;
+  assert(mounted.setMount(AXIS_NEG_Y, AXIS_POS_Z));
+  const Vec3 a = makeVec3(0, -1, 0);
+  mounted.tick(10000, sample(10000, a, makeVec3(0, 10, 0)), true);
+  mounted.tick(20000, sample(20000, a, makeVec3(0, 10, 0)), true);
+  assert(mounted.yawDeg() > 0.09f);  // sensor +Y -> body -Z
+}
+
+void test_look_per_axis_dead_and_neutral_gate() {
+  MouseLookMapper m;
+  MouseLookParams p = m.params();
+  p.deadbandDeg[0] = 4; p.deadbandDeg[1] = 10;
+  m.setParams(p);
+  LookVelocity v = m.update(6, 6);
+  assert(v.engagedX && !v.engagedY);
+  v = m.update(12, 12);
+  assert(v.engagedX && v.engagedY);
+  v = m.update(7, 7);  // X release 2, Y release 8
+  assert(v.engagedX && !v.engagedY);
+  p.hystMode = 1;
+  m.setParams(p); m.reset();
+  v = m.update(7, 11);  // X engage 6, Y engage 12
+  assert(v.engagedX && !v.engagedY);
+  m.update(12, 13);
+  v = m.update(5, 9);   // X release 4, Y release 10
+  assert(v.engagedX && !v.engagedY);
+
+  Sim s;
+  s.c.setAlpha(0.01f);
+  s.c.requestArm(); s.step(0, 0); s.runStill(305);
+  p = s.c.lookParams();
+  p.hsrc = p.vsrc = 1;
+  p.deadbandDeg[0] = 4; p.deadbandDeg[1] = 10;
+  s.c.setLookParams(p);
+  assert(s.runStill(100, 0, 7).state == LOOK_WAIT_NEUTRAL);
+  p.deadbandDeg[0] = 10; p.deadbandDeg[1] = 4;
+  s.c.setLookParams(p);
+  assert(s.runStill(100, 0, 7).state == LOOK_WAIT_NEUTRAL);
+  p.hsrc = p.vsrc = 0;  // unmapped pitch must no longer block neutral
+  s.c.setLookParams(p);
+  assert(s.runStill(40, 0, 12).state == LOOK_ACTIVE);
+}
+
+void test_look_new_param_sanitization() {
+  MouseLookParams p = defaultMouseLookParams();
+  p.hsrc = 255; p.vsrc = 3; p.yawTauS = 200;
+  p.deadbandDeg[0] = -2; p.deadbandDeg[1] = 30;
+  assert(sanitizeMouseLookParams(&p));
+  assert(p.hsrc == 2 && p.vsrc == 2 && p.yawTauS == 120);
+  assert(p.deadbandDeg[0] == 0 && p.deadbandDeg[1] == 15);
+  p.yawTauS = NAN; p.deadbandDeg[1] = NAN;
+  assert(sanitizeMouseLookParams(&p));
+  assert(p.yawTauS == 0 && p.deadbandDeg[1] == 0);
+}
+
 void test_monotonic_clock() {
   MonotonicClock64 c;
   assert(c.update(10U) == 10U);
@@ -453,6 +569,10 @@ int main() {
   test_controller_fault_latch();
   test_controller_startup_without_imu_faults();
   test_controller_cal_motion_returns_disarmed();
+  test_look_sources_swap_and_same_source();
+  test_yaw_integration_leak_and_reset();
+  test_look_per_axis_dead_and_neutral_gate();
+  test_look_new_param_sanitization();
   test_monotonic_clock();
   run_game_input_tests();
   run_channel_tests();

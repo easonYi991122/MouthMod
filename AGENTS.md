@@ -2,7 +2,7 @@
 
 Hands-free Minecraft Education controller for a JHU PDBMI course project. One
 **Seeed XIAO nRF52840 Sense** acts as a USB keyboard + mouse: tongue joystick
-→ W/A/S/D, bite → Space, puff → left mouse button, sip → disarm/arm, head tilt
+→ W/A/S/D, bite → Space, puff → left mouse button, sip → Space (long sip disarms/arms), head tilt
 (on-board IMU) → mouse look. A Python bridge on the Mac shows status, tunes
 parameters and lets output through only while Minecraft is the front app.
 
@@ -42,7 +42,8 @@ float_app:  # preferred UI (D32); browser + bridge is the backup
   runs: /usr/bin/python3 <app>/Contents/Resources/look_demo/bridge.py --http 0 --exit-with-parent
   extra_bridge_args_env: MOUTHMOD_BRIDGE_ARGS   # e.g. "--serial /dev/cu.usbmodem1101"
   note: bundles a copy of tools/look_demo; rebuild after changing bridge.py or the pages
-  api: {GET: [/bridge-info, /events (SSE, one board line per event)], POST: [/cmd (body = one command line)]}
+  api: {GET: [/bridge-info, /events (SSE, one board line per event), /profile], POST: [/cmd (body = one command line), /profile (saved command lines; empty body clears)]}
+  profile: ~/.mouthmod/profile.txt (--profile PATH); replayed 1.5 s after every serial connect (D36)
 pins:  # frozen by the spec; do not change
   A0: joystick X wiper
   A1: joystick Y wiper

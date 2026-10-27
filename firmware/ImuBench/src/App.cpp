@@ -2,6 +2,7 @@
 
 #include <Adafruit_TinyUSB.h>
 #include <Arduino.h>
+#include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -32,7 +33,7 @@ GameInput gGame;
 
 // Body channels (ported from the team's joystick and puff sketches).
 JoystickMapper gJoy;
-PressureChannel gBreath;  // module #1: puff -> right button, sip -> disarm
+PressureChannel gBreath;  // module #1: puff -> left button, sip -> jump/disarm
 PressureChannel gBite;    // module #2: bite -> Space
 Hx710b gBreathHx(cfg::kPinBreathOut, cfg::kPinBreathSck);
 Hx710b gBiteHx(cfg::kPinBiteOut, cfg::kPinBiteSck);
@@ -42,7 +43,7 @@ bool gUseBite = cfg::kUseBite;
 uint64_t gBreathSinceUs = 0;  // enable time, starts the startup grace
 uint64_t gBiteSinceUs = 0;
 uint64_t gSpanUntilUs = 0;    // "jspan" capture end; 0 = idle
-bool gSipFired = false;
+SipDisarmGate gSipDisarm(cfg::kSipDisarmMs);
 SipArmGate gSipArm(cfg::kSipArmUs);
 Watchdog gWdt;
 uint32_t gResetReason = 0;
@@ -102,7 +103,7 @@ void emit(const char* line) {
 
 void emitf(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
 void emitf(const char* fmt, ...) {
-  char buf[256];
+  char buf[768];  // extended #Q includes all v0.7.0 channel parameters
   va_list ap;
   va_start(ap, fmt);
   vsnprintf(buf, sizeof(buf), fmt, ap);
@@ -119,7 +120,7 @@ bool enableInputClosed() {
 
 void printHeader() {
   emit("#H,t_ms,loop_dt_us,state,imu_new,imu_age_ms,ax_g,ay_g,az_g,"
-       "gx_dps,gy_dps,gz_dps,roll_deg,pitch_deg,roll_err,pitch_err,"
+       "gx_dps,gy_dps,gz_dps,roll_deg,pitch_deg,look_x_err,look_y_err,"
        "vx_cps,vy_cps,dx,dy,hid,engaged,log_dropped,event\n");
   emit("#HS,t_ms,joy_x_raw,joy_y_raw,joy_x_norm,joy_y_norm,joy_keys,"
        "breath_raw,breath_baseline,breath_p,puff,sip,bite_raw,bite_baseline,"
@@ -132,28 +133,37 @@ void printChannels() {
   const PressureParams& k = gBite.params();
   emitf("#Q,joy=%u,jcenter=%.0f/%.0f,jon=%.3f,joff=%.3f,jspan=%.0f/%.0f/%.0f/%.0f,"
         "jswap=%u,jinvx=%u,jinvy=%u,breath=%u,bsign=%d,bon=%ld,boff=%ld,son=%ld,"
-        "soff=%ld,brel_ms=%lu,slock_ms=%lu,bite=%u,ksign=%d,kon=%ld,koff=%ld\n",
-        gUseJoy ? 1U : 0U, gJoy.center(0), gJoy.center(1), j.onNorm, j.offNorm,
+        "soff=%ld,brel_ms=%lu,slock_ms=%lu,bite=%u,ksign=%d,kon=%ld,koff=%ld,"
+        "jonx=%.3f,jony=%.3f,joffx=%.3f,joffy=%.3f,pmode=%u,prep_ms=%lu,"
+        "sjump=%u,sdis_ms=%lu\n",
+        gUseJoy ? 1U : 0U, gJoy.center(0), gJoy.center(1), j.onNorm[0], j.offNorm[0],
         j.spanPos[0], j.spanNeg[0], j.spanPos[1], j.spanNeg[1], j.swapXY ? 1U : 0U,
         j.invertX ? 1U : 0U, j.invertY ? 1U : 0U, gUseBreath ? 1U : 0U, b.sign,
         static_cast<long>(b.onCounts), static_cast<long>(b.offCounts),
         static_cast<long>(b.sipOnCounts), static_cast<long>(b.sipOffCounts),
         static_cast<unsigned long>(b.releaseHoldUs / 1000U),
         static_cast<unsigned long>(b.sipLockoutUs / 1000U), gUseBite ? 1U : 0U,
-        k.sign, static_cast<long>(k.onCounts), static_cast<long>(k.offCounts));
+        k.sign, static_cast<long>(k.onCounts), static_cast<long>(k.offCounts),
+        j.onNorm[0], j.onNorm[1], j.offNorm[0], j.offNorm[1],
+        static_cast<unsigned>(gGame.params().puffMode),
+        static_cast<unsigned long>(gGame.params().puffRepeatMs),
+        gGame.params().sipJump ? 1U : 0U,
+        static_cast<unsigned long>(gSipDisarm.holdMs()));
 }
 
 void printParams() {
   const MouseLookParams& p = gLook.lookParams();
   emitf("#P,kx=%.2f,ky=%.2f,dead=%.2f,hyst=%.2f,sat=%.2f,hmode=%u,vmode=%u,"
         "confirm=%.0f,invx=%u,invy=%u,alpha=%.4f,mount=%s%s,hid=%u,rate=%u,"
-        "fgate=%u\n",
-        p.kxCpsPerDeg, p.kyCpsPerDeg, p.deadbandDeg, p.hysteresisDeg,
+        "fgate=%u,hsrc=%u,vsrc=%u,yawtau=%.1f,deadx=%.2f,deady=%.2f\n",
+        p.kxCpsPerDeg, p.kyCpsPerDeg, p.deadbandDeg[0], p.hysteresisDeg,
         p.saturationDeg, p.hystMode, p.velMode, p.engageConfirmS * 1e3f,
         p.invertX ? 1U : 0U,
         p.invertY ? 1U : 0U, gLook.alpha(), signedAxisName(gLook.mount().up()),
         signedAxisName(gLook.mount().forward()), gHidEnabled ? 1U : 0U,
-        gTelemetryHz, gFocusGate ? 1U : 0U);
+        gTelemetryHz, gFocusGate ? 1U : 0U,
+        static_cast<unsigned>(p.hsrc), static_cast<unsigned>(p.vsrc),
+        p.yawTauS, p.deadbandDeg[0], p.deadbandDeg[1]);
 }
 
 void printIdentity() {
@@ -186,23 +196,36 @@ bool setChannelParam(const char* name, float v) {
   PressureParams b = gBreath.params();
   PressureParams k = gBite.params();
   const int8_t sign = v < 0 ? -1 : 1;
-  const int32_t counts = static_cast<int32_t>(v);
-  if (!strcmp(name, "jon")) j.onNorm = v;
-  else if (!strcmp(name, "joff")) j.offNorm = v;
+  GameInputParams game = gGame.params();
+  if (!strcmp(name, "jon")) j.onNorm[0] = j.onNorm[1] = v;
+  else if (!strcmp(name, "jonx")) j.onNorm[0] = v;
+  else if (!strcmp(name, "jony")) j.onNorm[1] = v;
+  else if (!strcmp(name, "joff")) j.offNorm[0] = j.offNorm[1] = v;
+  else if (!strcmp(name, "joffx")) j.offNorm[0] = v;
+  else if (!strcmp(name, "joffy")) j.offNorm[1] = v;
+  else if (!strcmp(name, "pmode"))
+    game.puffMode = static_cast<uint8_t>(v < 0 ? 0 : (v > 2 ? 2 : v));
+  else if (!strcmp(name, "prep"))
+    game.puffRepeatMs = static_cast<uint32_t>(v < 40 ? 40 : (v > 2000 ? 2000 : v));
+  else if (!strcmp(name, "sjump")) game.sipJump = v != 0.0f;
+  else if (!strcmp(name, "sdis"))
+    gSipDisarm.setHoldMs(static_cast<uint32_t>(
+        v < 0 ? 0 : (v > 4294967040.0f ? 4294967040.0f : v)));
   else if (!strcmp(name, "jswap")) j.swapXY = v != 0.0f;
   else if (!strcmp(name, "jinvx")) j.invertX = v != 0.0f;
   else if (!strcmp(name, "jinvy")) j.invertY = v != 0.0f;
   else if (!strcmp(name, "bsign")) b.sign = sign;
-  else if (!strcmp(name, "bon")) b.onCounts = counts;
-  else if (!strcmp(name, "boff")) b.offCounts = counts;
-  else if (!strcmp(name, "son")) b.sipOnCounts = counts;
-  else if (!strcmp(name, "soff")) b.sipOffCounts = counts;
+  else if (!strcmp(name, "bon")) b.onCounts = static_cast<int32_t>(v);
+  else if (!strcmp(name, "boff")) b.offCounts = static_cast<int32_t>(v);
+  else if (!strcmp(name, "son")) b.sipOnCounts = static_cast<int32_t>(v);
+  else if (!strcmp(name, "soff")) b.sipOffCounts = static_cast<int32_t>(v);
   else if (!strcmp(name, "brel")) b.releaseHoldUs = static_cast<uint32_t>(v * 1000.0f);
   else if (!strcmp(name, "slock")) b.sipLockoutUs = static_cast<uint32_t>(v * 1000.0f);
   else if (!strcmp(name, "ksign")) k.sign = sign;
-  else if (!strcmp(name, "kon")) k.onCounts = counts;
-  else if (!strcmp(name, "koff")) k.offCounts = counts;
+  else if (!strcmp(name, "kon")) k.onCounts = static_cast<int32_t>(v);
+  else if (!strcmp(name, "koff")) k.offCounts = static_cast<int32_t>(v);
   else return false;
+  gGame.setParams(game);
   gJoy.setParams(j);
   gBreath.setParams(b);
   gBite.setParams(k);
@@ -213,12 +236,19 @@ bool setChannelParam(const char* name, float v) {
 bool setParam(const char* name, const char* value) {
   char* end = 0;
   const float v = strtof(value, &end);
-  if (end == value) return false;
+  if (end == value || !isfinite(v)) return false;
   if (setChannelParam(name, v)) return true;
   MouseLookParams p = gLook.lookParams();
   if (!strcmp(name, "kx")) p.kxCpsPerDeg = v;
   else if (!strcmp(name, "ky")) p.kyCpsPerDeg = v;
-  else if (!strcmp(name, "dead")) p.deadbandDeg = v;
+  else if (!strcmp(name, "dead")) p.deadbandDeg[0] = p.deadbandDeg[1] = v;
+  else if (!strcmp(name, "deadx")) p.deadbandDeg[0] = v;
+  else if (!strcmp(name, "deady")) p.deadbandDeg[1] = v;
+  else if (!strcmp(name, "hsrc"))
+    p.hsrc = static_cast<uint8_t>(v < 0 ? 0 : (v > 2 ? 2 : v));
+  else if (!strcmp(name, "vsrc"))
+    p.vsrc = static_cast<uint8_t>(v < 0 ? 0 : (v > 2 ? 2 : v));
+  else if (!strcmp(name, "yawtau")) p.yawTauS = v;
   else if (!strcmp(name, "hyst")) p.hysteresisDeg = v;
   else if (!strcmp(name, "sat")) p.saturationDeg = v;
   else if (!strcmp(name, "hmode")) p.hystMode = static_cast<uint8_t>(v);
@@ -500,8 +530,8 @@ void writeTelemetry(uint64_t t, const LookTick& k) {
            static_cast<unsigned long>(t / 1000U),
            static_cast<unsigned long>(gLoopDtUs), lookStateName(k.state),
            gImuNewSinceLine ? 1U : 0U, static_cast<unsigned long>(ageMs), a.x,
-           a.y, a.z, g.x, g.y, g.z, k.rollDeg, k.pitchDeg, k.rollErrDeg,
-           k.pitchErrDeg, k.velocity.vxCps, k.velocity.vyCps, gDxSum, gDySum,
+           a.y, a.z, g.x, g.y, g.z, k.rollDeg, k.pitchDeg, k.lookXErrDeg,
+           k.lookYErrDeg, k.velocity.vxCps, k.velocity.vyCps, gDxSum, gDySum,
            gHidEnabled ? 1U : 0U, k.velocity.engagedX ? 1U : 0U,
            k.velocity.engagedY ? 1U : 0U,
            static_cast<unsigned long>(gLogDropped),
@@ -609,18 +639,14 @@ void controlTick(uint64_t t) {
   checkPressureFresh(gBreath, gUseBreath, gBreathSinceUs, "fault_breath_timeout", t);
   checkPressureFresh(gBite, gUseBite, gBiteSinceUs, "fault_bite_timeout", t);
 
-  // 4. Disarm first: a sip held >= 150 ms (once per sip).
-  if (gUseBreath && cfg::kSipDisarms &&
-      gBreath.sipHeldUs(t) >= cfg::kSipDisarmUs) {
-    const LookState s = gLook.state();
-    if (!gSipFired && s != LOOK_DISARMED && s != LOOK_FAULT) {
-      gLook.requestDisarm();
-      emitf("#E,%lu,sip_disarm,%s\n", static_cast<unsigned long>(t / 1000U),
-            lookStateName(s));
-    }
-    gSipFired = true;
-  } else if (!gBreath.sip()) {
-    gSipFired = false;
+  // 4. D34: runtime sip-disarm delay, once per sip; 0 disables it.
+  const LookState beforeSip = gLook.state();
+  if (cfg::kSipDisarms && gSipDisarm.update(
+          beforeSip != LOOK_DISARMED && beforeSip != LOOK_FAULT,
+          gUseBreath && gBreath.sip(), gBreath.sipHeldUs(t))) {
+    gLook.requestDisarm();
+    emitf("#E,%lu,sip_disarm,%s\n", static_cast<unsigned long>(t / 1000U),
+          lookStateName(beforeSip));
   }
   gLook.setOtherInputsNeutral(otherInputsNeutral());
 
@@ -724,7 +750,10 @@ void controlTick(uint64_t t) {
     intent.left = intent.left || gJoy.left();
     intent.right = intent.right || gJoy.right();
   }
-  if (gUseBreath) intent.use = intent.use || gBreath.active();
+  if (gUseBreath) {
+    intent.use = intent.use || gBreath.active();
+    intent.sip = gBreath.sip();
+  }
   if (gUseBite) intent.jump = intent.jump || gBite.active();
   intent.jump = intent.jump || gTapJump;
   intent.use = intent.use || gTapUse;
@@ -793,12 +822,28 @@ void appSetup() {
   MouseLookParams p = defaultMouseLookParams();
   p.kxCpsPerDeg = cfg::kKxCpsPerDeg;
   p.kyCpsPerDeg = cfg::kKyCpsPerDeg;
-  p.deadbandDeg = cfg::kDeadbandDeg;
+  p.deadbandDeg[0] = cfg::kDeadbandXDeg;
+  p.deadbandDeg[1] = cfg::kDeadbandYDeg;
+  p.hsrc = cfg::kHorizontalSource;
+  p.vsrc = cfg::kVerticalSource;
+  p.yawTauS = cfg::kYawTauS;
   p.hysteresisDeg = cfg::kHysteresisDeg;
   p.saturationDeg = cfg::kSaturationDeg;
   p.velMode = cfg::kVelMode;
   p.engageConfirmS = cfg::kEngageConfirmMs * 1e-3f;
   gLook.setLookParams(p);
+
+  GameInputParams game = defaultGameInputParams();
+  game.puffMode = cfg::kPuffMode;
+  game.puffRepeatMs = cfg::kPuffRepeatMs;
+  game.sipJump = cfg::kSipJump;
+  gGame.setParams(game);
+  JoystickParams joy = gJoy.params();
+  joy.onNorm[0] = cfg::kJoyOnX;
+  joy.onNorm[1] = cfg::kJoyOnY;
+  joy.offNorm[0] = cfg::kJoyOffX;
+  joy.offNorm[1] = cfg::kJoyOffY;
+  gJoy.setParams(joy);
 
   // Joystick ADC: [Z] section 6 start configuration (12-bit, 3.6 V range).
   analogReadResolution(12);

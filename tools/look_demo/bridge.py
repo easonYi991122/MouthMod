@@ -8,6 +8,7 @@ test page works in any browser (no Web Serial needed).
   GET  /events      Server-Sent Events, one board line per event
   POST /cmd         body = one command line, written to the board
   GET  /bridge-info JSON status
+  GET/POST /profile saved startup commands (empty POST clears)
 
 Safety: when the last page disconnects, and when the bridge stops (Ctrl+C
 or SIGTERM), it sends "disarm". Real HID stays as it was (D30).
@@ -33,6 +34,7 @@ import select
 import signal
 import subprocess
 import sys
+import tempfile
 import termios
 import threading
 import time
@@ -41,9 +43,66 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
-class SerialLink:
+class BridgeProfile:
     def __init__(self, path):
+        self.path = os.path.expanduser(path)
+        self.lock = threading.Lock()
+
+    @staticmethod
+    def validate(body):
+        if len(body) > 4096:
+            raise ValueError("profile exceeds 4096 bytes")
+        try:
+            text = body.decode("utf-8")
+        except UnicodeDecodeError as e:
+            raise ValueError("profile must be UTF-8") from e
+        if not text:
+            return []
+        lines = text.split("\n")
+        if lines[-1] == "":
+            lines.pop()  # a final line terminator is optional
+        for line in lines:
+            if (not line.startswith(("set ", "chan ", "mount ", "fgate ", "hid "))
+                    or not line.partition(" ")[2].strip()
+                    or any(ord(c) < 32 or c in "\x7f\x85\u2028\u2029" for c in line)):
+                raise ValueError("invalid profile command")
+        return lines
+
+    def read(self):
+        with self.lock:
+            try:
+                with open(self.path, "rb") as f:
+                    body = f.read(4097)
+            except FileNotFoundError:
+                return b""
+            self.validate(body)
+            return body
+
+    def save(self, body):
+        self.validate(body)
+        with self.lock:
+            if not body:
+                try:
+                    os.unlink(self.path)
+                except FileNotFoundError:
+                    pass
+                return
+            directory = os.path.dirname(os.path.abspath(self.path))
+            os.makedirs(directory, exist_ok=True)
+            fd, tmp = tempfile.mkstemp(prefix=".profile-", dir=directory)
+            try:
+                with os.fdopen(fd, "wb") as f:
+                    f.write(body)
+                os.replace(tmp, self.path)
+            finally:
+                if os.path.exists(tmp):
+                    os.unlink(tmp)
+
+
+class SerialLink:
+    def __init__(self, path, profile):
         self.path = path  # None = auto-detect
+        self.profile = profile
         self.fd = None
         self.lock = threading.Lock()
         self.clients = []
@@ -60,6 +119,13 @@ class SerialLink:
 
     def open(self, path):
         fd = os.open(path, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
+        try:
+            return self.configure(fd)
+        except (OSError, termios.error):
+            os.close(fd)
+            raise
+
+    def configure(self, fd):
         attrs = termios.tcgetattr(fd)
         attrs[0] = 0                                             # iflag: raw
         attrs[1] = 0                                             # oflag: raw
@@ -96,18 +162,30 @@ class SerialLink:
                 continue
             try:
                 fd = self.open(path)
-            except OSError as e:
-                self.broadcast(f"#BRIDGE,error,{path},{e.strerror}")
+            except (OSError, termios.error) as e:
+                self.broadcast(f"#BRIDGE,error,{path},{e}")
                 time.sleep(1.0)
                 continue
             with self.lock:
                 self.fd, self.current = fd, path
             print(f"[bridge] connected {path}", flush=True)
             self.broadcast(f"#BRIDGE,connected,{path}")
+            replay_at = time.monotonic() + 1.5
             buf = b""
             try:
                 while True:
-                    r, _, _ = select.select([fd], [], [], 0.5)
+                    if replay_at is not None and time.monotonic() >= replay_at:
+                        replay_at = None
+                        try:
+                            lines = self.profile.validate(self.profile.read())
+                            for line in lines:
+                                if not self.write(line + "\n"):
+                                    raise OSError("profile write failed")
+                            self.broadcast(f"#BRIDGE,profile,{len(lines)}")
+                        except ValueError as e:
+                            self.broadcast(f"#BRIDGE,error,profile,{e}")
+                    timeout = 0.5 if replay_at is None else min(0.5, max(0, replay_at - time.monotonic()))
+                    r, _, _ = select.select([fd], [], [], timeout)
                     if not r:
                         continue
                     chunk = os.read(fd, 4096)
@@ -195,6 +273,7 @@ class FocusWatcher:
 
 LINK = None
 FOCUS = None
+PROFILE = None
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -209,6 +288,18 @@ class Handler(SimpleHTTPRequestHandler):
         super().end_headers()
 
     def do_GET(self):
+        if self.path == "/profile":
+            try:
+                body = PROFILE.read()
+            except (OSError, ValueError) as e:
+                self.send_error(500, str(e))
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if self.path == "/bridge-info":
             body = json.dumps({"bridge": True, "port": LINK.current,
                                "lines": LINK.lines,
@@ -250,6 +341,25 @@ class Handler(SimpleHTTPRequestHandler):
         super().do_GET()
 
     def do_POST(self):
+        if self.path == "/profile":
+            try:
+                n = int(self.headers.get("Content-Length", "0"))
+                if not 0 <= n <= 4096:
+                    raise ValueError("profile exceeds 4096 bytes")
+                body = self.rfile.read(n)
+                if len(body) != n:
+                    raise ValueError("incomplete profile body")
+                PROFILE.save(body)
+            except ValueError as e:
+                self.send_error(400, str(e))
+                return
+            except OSError as e:
+                self.send_error(500, str(e))
+                return
+            self.send_response(200)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
         if self.path != "/cmd":
             self.send_error(404)
             return
@@ -262,10 +372,12 @@ class Handler(SimpleHTTPRequestHandler):
 
 
 def main():
-    global LINK, FOCUS
+    global LINK, FOCUS, PROFILE
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--serial", help="serial device (default: auto-detect)")
     ap.add_argument("--http", type=int, default=8765, help="HTTP port")
+    ap.add_argument("--profile", default="~/.mouthmod/profile.txt",
+                    help="saved startup commands (default: ~/.mouthmod/profile.txt)")
     ap.add_argument("--focus-app", default="minecraft",
                     help="substring of the game's app name (default: minecraft)")
     ap.add_argument("--exit-with-parent", action="store_true",
@@ -279,7 +391,8 @@ def main():
                 time.sleep(1.0)
             os.kill(os.getpid(), signal.SIGTERM)  # same path as a normal stop
         threading.Thread(target=watch_parent, daemon=True).start()
-    LINK = SerialLink(args.serial)
+    PROFILE = BridgeProfile(args.profile)
+    LINK = SerialLink(args.serial, PROFILE)
     threading.Thread(target=LINK.run, daemon=True).start()
     if sys.platform == "darwin":
         FOCUS = FocusWatcher(LINK, args.focus_app)

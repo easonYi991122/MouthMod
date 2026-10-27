@@ -225,6 +225,173 @@ void test_release_all_forces_neutral_reports() {
   assert(h.g.plan(0, 0).slot == HID_NONE);
 }
 
+void setPuffMode(Host* h, uint8_t mode, uint32_t period = 600) {
+  GameInputParams p = h->g.params();
+  p.puffMode = mode; p.puffRepeatMs = period;
+  h->g.setParams(p);
+  h->settle(noGameIntent());
+}
+
+void test_puff_toggle_committed_and_cleared() {
+  Host h;
+  setPuffMode(&h, 1);
+  HidPlan p = h.step(intent(false, false, true));
+  assert(p.slot == HID_MOUSE && p.buttons == mc::kButtonPuff);
+  for (int i = 0; i < 30; ++i) {
+    p = h.step(noGameIntent(), true, 2);
+    assert(p.slot == HID_MOUSE && p.buttons == mc::kButtonPuff);
+  }
+  p = h.step(intent(false, false, true));
+  assert(p.slot == HID_MOUSE && p.buttons == 0);
+  h.step(noGameIntent());
+  p = h.step(intent(false, false, true));
+  assert(p.slot == HID_MOUSE && p.buttons == mc::kButtonPuff);
+  p = h.step(intent(false, false, true), false);
+  assert(p.slot == HID_MOUSE && p.buttons == 0);  // safety overrides min hold
+  assert(h.step(intent(false, false, true)).slot == HID_NONE);
+  h.step(noGameIntent());
+  p = h.step(intent(false, false, true));
+  assert(p.buttons == mc::kButtonPuff);
+  h.g.releaseAll();
+  h.settle(noGameIntent());
+  assert(h.g.committedButtons() == 0);
+  p = h.step(intent(false, false, true));
+  assert(p.slot == HID_MOUSE && p.buttons == mc::kButtonPuff);
+
+  Host busy;
+  setPuffMode(&busy, 1);
+  busy.step(intent(false, false, true), true, 0, 0, false);
+  busy.step(noGameIntent(), true, 0, 0, false);
+  // Toggle off before the first press is accepted: still deliver a real click.
+  p = busy.step(intent(false, false, true));
+  assert(p.slot == HID_MOUSE && p.buttons == mc::kButtonPuff);
+  const uint64_t down = busy.t;
+  uint64_t up = 0;
+  for (int i = 0; i < 15; ++i) {
+    p = busy.step(noGameIntent());
+    if (p.slot == HID_MOUSE && p.buttons == 0) up = busy.t;
+  }
+  assert(up - down >= busy.g.params().minPressUs);
+}
+
+void test_puff_repeat_committed_period_and_release_order() {
+  Host h;
+  setPuffMode(&h, 2);
+  uint64_t down = 0, lastDown = 0;
+  int presses = 0, releases = 0;
+  bool held = false;
+  for (int i = 0; i < 160; ++i) {
+    const HidPlan p = h.step(intent(false, false, true));
+    if (p.slot != HID_MOUSE) continue;
+    if (p.buttons) {
+      assert(!held);
+      if (lastDown) assert(h.t - lastDown == 600000);
+      down = lastDown = h.t; held = true; ++presses;
+    } else {
+      assert(held && h.t - down >= h.g.params().minPressUs);
+      held = false; ++releases;
+    }
+  }
+  assert(presses == 3 && releases == 3);
+  for (int i = 0; i < 100; ++i)
+    assert(h.step(noGameIntent()).slot == HID_NONE);
+
+  // prep < minPress: an accepted up report still separates every click.
+  Host fast;
+  setPuffMode(&fast, 2, 40);
+  for (int i = 0; i < 5; ++i) {
+    const HidPlan p = fast.step(intent(false, false, true), true, 0, 0, false);
+    assert(p.slot == HID_MOUSE && p.buttons == mc::kButtonPuff);
+  }
+  HidPlan p = fast.step(intent(false, false, true));
+  assert(p.buttons == mc::kButtonPuff);
+  down = fast.t;
+  for (int i = 0; i < 5; ++i)
+    assert(fast.step(intent(false, false, true)).slot == HID_NONE);
+  // Release stays pending throughout a busy endpoint, never replaced by down.
+  for (int i = 0; i < 10; ++i) {
+    p = fast.step(intent(false, false, true), true, 0, 0, false);
+    assert(p.slot == HID_MOUSE && p.buttons == 0);
+  }
+  p = fast.step(intent(false, false, true));
+  assert(p.slot == HID_MOUSE && p.buttons == 0 && fast.t - down >= 60000);
+  p = fast.step(intent(false, false, true));
+  assert(p.slot == HID_MOUSE && p.buttons == mc::kButtonPuff);
+  p = fast.step(intent(false, false, true), false);
+  assert(p.slot == HID_MOUSE && p.buttons == 0);
+  for (int i = 0; i < 30; ++i)
+    assert(fast.step(intent(false, false, true)).slot == HID_NONE);
+  fast.step(noGameIntent());
+  p = fast.step(intent(false, false, true));
+  assert(p.slot == HID_MOUSE && p.buttons == mc::kButtonPuff);
+  fast.g.releaseAll();
+  fast.settle(intent(false, false, true));
+  for (int i = 0; i < 30; ++i)
+    assert(fast.step(intent(false, false, true)).slot == HID_NONE);
+}
+
+void test_sip_one_jump_per_press_and_bite_or() {
+  Host h;
+  h.settle(noGameIntent());
+  GameIntent in = noGameIntent();
+  in.sip = true;
+  int presses = 0, releases = 0;
+  for (int i = 0; i < 50; ++i) {
+    HidPlan p = h.step(in);
+    if (p.slot == HID_KEYBOARD) {
+      if (hasKey(p.keys, mc::kKeyJump)) ++presses;
+      else ++releases;
+    }
+  }
+  assert(presses == 1 && releases == 1);
+  h.step(noGameIntent());
+  HidPlan p = h.step(in);
+  assert(p.slot == HID_KEYBOARD && hasKey(p.keys, mc::kKeyJump));
+  for (int i = 0; i < 20; ++i) h.step(noGameIntent());
+  // Two independent rising edges, including a sip while bite remains held.
+  in = noGameIntent(); in.jump = true;
+  p = h.step(in);
+  assert(hasKey(p.keys, mc::kKeyJump));
+  in.sip = true;
+  presses = 1; releases = 0;
+  for (int i = 0; i < 50; ++i) {
+    p = h.step(in);
+    if (p.slot == HID_KEYBOARD) {
+      if (hasKey(p.keys, mc::kKeyJump)) ++presses;
+      else ++releases;
+    }
+  }
+  assert(presses == 2 && releases == 2);
+  h.step(noGameIntent());
+  in = noGameIntent(); in.sip = in.jump = true;
+  p = h.step(in);
+  assert(hasKey(p.keys, mc::kKeyJump));  // simultaneous edges OR to one tap
+  for (int i = 0; i < 50; ++i) {
+    p = h.step(in);
+    assert(p.slot != HID_KEYBOARD || !hasKey(p.keys, mc::kKeyJump));
+  }
+  h.step(in, false);
+  assert(h.step(in).slot == HID_NONE);  // held sip cannot fire on re-enable
+  GameInputParams params = h.g.params();
+  params.sipJump = false; h.g.setParams(params);
+  h.step(noGameIntent());
+  in.jump = false;
+  for (int i = 0; i < 10; ++i) assert(h.step(in).slot == HID_NONE);
+  in.jump = true;
+  assert(hasKey(h.step(in).keys, mc::kKeyJump));  // bite is still enabled
+}
+
+void test_puff_param_bounds() {
+  GameInput g;
+  GameInputParams p = g.params();
+  p.puffMode = 255; p.puffRepeatMs = 0;
+  g.setParams(p);
+  assert(g.params().puffMode == 2 && g.params().puffRepeatMs == 40);
+  p.puffRepeatMs = 5000;
+  g.setParams(p);
+  assert(g.params().puffRepeatMs == 2000);
+}
+
 }  // namespace
 
 void run_game_input_tests() {
@@ -237,4 +404,8 @@ void run_game_input_tests() {
   test_opposite_directions_cancel();
   test_disarm_releases_at_once_and_needs_release_to_retrigger();
   test_release_all_forces_neutral_reports();
+  test_puff_toggle_committed_and_cleared();
+  test_puff_repeat_committed_period_and_release_order();
+  test_sip_one_jump_per_press_and_bite_or();
+  test_puff_param_bounds();
 }

@@ -15,8 +15,8 @@
 #include <stdint.h>
 
 struct JoystickParams {
-  float onNorm;          // trigger, fraction of the half-axis span
-  float offNorm;         // release (< onNorm)
+  float onNorm[2];       // [X (A/D), Y (W/S)] trigger, fraction of half-axis span
+  float offNorm[2];      // per-axis release (< corresponding onNorm)
   float filterTauUs;     // low-pass time constant
   float minSpanCounts;   // spans below this are unusable
   float spanPos[2];      // [x, y] counts from center to comfortable + extreme

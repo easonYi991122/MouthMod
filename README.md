@@ -116,6 +116,8 @@ python3 tools/look_demo/bridge.py   # 在仓库根目录运行
 | `act <w\|a\|s\|d\|jump\|use> <0\|1\|ms>` | 仅 ACTIVE 时可用：模拟摇杆、咬合、吹气的电平。`1` 表示一直保持，直到发 `0`；≥2 表示保持这么多毫秒；`act clear` 全部清除 |
 | `tap jump\|use` | 仅 ACTIVE 时可用：一次很短的咬合或吹气，用来检查 60 ms 最短按住 |
 | `chan <joy\|breath\|bite> <0\|1>` | 打开或关闭某个通道（默认摇杆、吹吸打开，咬合关闭）。没接的传感器要先关掉；切换后会停用 |
+| `set <hsrc\|vsrc\|deadx\|deady\|yawtau> <v>` | v0.7.0：视角左右/上下来源（0 roll、1 pitch、2 yaw）、分轴起转角、yaw 回零时间（D33）；`D` 行第 14/15 列改为映射后的左右/上下误差（`look_x_err,look_y_err`） |
+| `set <jonx\|jony\|joffx\|joffy\|pmode\|prep\|sjump\|sdis> <v>` | v0.7.0：摇杆分轴阈值、吹气模式和连点间隔、吸气跳跃、吸气停用时长（D33–D35）；桥的 `GET/POST /profile` 读写保存的参数（D36） |
 | `fgate 0\|1` / `focus 0\|1` | 前台门控开关 / 由桥周期发送的「Minecraft 在前台」心跳（见 D28） |
 | `hang` | 仅在看门狗开启时可用：让主循环卡死，用来测试看门狗复位（复位后应为 DISARMED，`#I` 里 `reset=watchdog`） |
 | `jspan` | 仅 DISARMED 时可用：先保持松杆，再在 6 s 内把四个方向各推到舒适的极限，记录每人的摇杆行程 |

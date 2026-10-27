@@ -4,8 +4,8 @@
 
 JoystickParams defaultJoystickParams() {
   JoystickParams p;
-  p.onNorm = 0.12f;
-  p.offNorm = 0.08f;
+  p.onNorm[0] = p.onNorm[1] = 0.12f;
+  p.offNorm[0] = p.offNorm[1] = 0.08f;
   p.filterTauUs = 20000.0f;
   p.minSpanCounts = 100.0f;
   // Nominal half travel of a 3.3 V pot on the 12-bit, 3.6 V ADC range.
@@ -53,7 +53,7 @@ bool JoystickMapper::finishCenter() {
     const float spread = max_[i] - min_[i];
     const float smallest =
         params_.spanPos[i] < params_.spanNeg[i] ? params_.spanPos[i] : params_.spanNeg[i];
-    if (spread > params_.offNorm * smallest) return false;
+    if (spread > params_.offNorm[i] * smallest) return false;
   }
   for (int i = 0; i < 2; ++i) {
     center_[i] = sum_[i] / static_cast<float>(n_);
@@ -140,10 +140,10 @@ void JoystickMapper::update(float rawX, float rawY, uint32_t dtUs) {
   for (int i = 0; i < 2; ++i) {
     const float v = n[i];
     int d = dir_[i];
-    if (v >= params_.onNorm) d = 1;
-    else if (v <= -params_.onNorm) d = -1;
-    else if (d == 1 && v > params_.offNorm) d = 1;
-    else if (d == -1 && v < -params_.offNorm) d = -1;
+    if (v >= params_.onNorm[i]) d = 1;
+    else if (v <= -params_.onNorm[i]) d = -1;
+    else if (d == 1 && v > params_.offNorm[i]) d = 1;
+    else if (d == -1 && v < -params_.offNorm[i]) d = -1;
     else d = 0;
     dir_[i] = d;
   }
@@ -154,6 +154,6 @@ void JoystickMapper::clearOutput() {
 }
 
 bool JoystickMapper::neutral() const {
-  return centered_ && fabsf(norm_[0]) < params_.offNorm &&
-         fabsf(norm_[1]) < params_.offNorm;
+  return centered_ && fabsf(norm_[0]) < params_.offNorm[0] &&
+         fabsf(norm_[1]) < params_.offNorm[1];
 }

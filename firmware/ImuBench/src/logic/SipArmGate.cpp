@@ -1,5 +1,13 @@
 #include "SipArmGate.h"
 
+bool SipDisarmGate::update(bool armed, bool sipActive, uint64_t sipHeldUs) {
+  if (!sipActive) fired_ = false;
+  if (!armed || !sipActive || fired_ || holdMs_ == 0 ||
+      sipHeldUs < static_cast<uint64_t>(holdMs_) * 1000U) return false;
+  fired_ = true;
+  return true;
+}
+
 // Starts not eligible: a sip already held at power-up must be released.
 SipArmGate::SipArmGate(uint32_t holdUs) : holdUs_(holdUs), eligible_(false) {}
 

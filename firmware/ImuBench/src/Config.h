@@ -9,7 +9,7 @@ namespace cfg {
 
 // --- Build / identity ---
 static const char* const kFirmwareName = "MouthMod-ImuBench";
-static const char* const kFirmwareVersion = "0.6.1";
+static const char* const kFirmwareVersion = "0.7.0";
 
 // --- Loop ---
 static const uint32_t kLoopPeriodUs = 10000;  // 100 Hz, non-blocking (frozen)
@@ -32,7 +32,12 @@ static const float kAlpha = 0.98f;
 // Engage edge raised from the spec start point 3 deg to 6 deg after bench
 // use (small head motions turned the camera); ramp velocity so speed starts
 // near zero at the edge, and a bump must last kEngageConfirmMs (D27).
-static const float kDeadbandDeg = 6.0f;
+// D33: v0.7.0 panel flexibility; independent look sources and dead bands.
+static const uint8_t kHorizontalSource = 0;  // roll
+static const uint8_t kVerticalSource = 1;    // pitch
+static const float kYawTauS = 20.0f;        // 0 disables yaw leak
+static const float kDeadbandXDeg = 6.0f;
+static const float kDeadbandYDeg = 6.0f;
 static const uint8_t kVelMode = 1;            // 0 = spec k*e, 1 = ramp
 static const float kEngageConfirmMs = 80.0f;
 static const float kHysteresisDeg = 2.0f;
@@ -60,6 +65,9 @@ static const uint32_t kWatchdogTimeoutMs = 500;  // frozen start point
 
 // --- Tongue joystick (pots on 3V3 only; A0 = X wiper, A1 = Y wiper) ---
 // Runtime: "chan joy 0|1". Thresholds/spans: logic/JoystickMapper.cpp.
+// D33: per-axis trigger/release thresholds (fraction of comfortable span).
+static const float kJoyOnX = 0.12f, kJoyOnY = 0.12f;
+static const float kJoyOffX = 0.08f, kJoyOffY = 0.08f;
 static const bool kUseJoystick = true;
 static const uint8_t kPinJoyX = 0;            // A0/D0 (frozen pin)
 static const uint8_t kPinJoyY = 1;            // A1/D1 (frozen pin)
@@ -67,7 +75,7 @@ static const uint8_t kJoyAdcAverage = 4;      // samples per read (as the port)
 static const uint32_t kJoySpanCaptureUs = 6000000;  // "jspan" window
 
 // --- Pressure modules (HX710B, 27 pulses = 40 Hz) ---
-// #1 breath (puff = right button, sip = disarm), #2 bite (Space). Runtime:
+// #1 breath (puff = left button, sip = jump/disarm), #2 bite (Space). Runtime:
 // "chan breath 0|1", "chan bite 0|1". Thresholds: logic/PressureChannel.cpp.
 static const bool kUseBreath = true;
 static const bool kUseBite = false;           // no bite hardware code yet
@@ -78,7 +86,12 @@ static const uint8_t kPinBiteSck = 5;         // D5
 static const uint32_t kPressureTimeoutUs = 250000;   // provisional (port: 350 ms)
 static const uint32_t kPressureGraceUs = 1000000;    // after boot / enable
 static const bool kSipDisarms = true;
-static const uint32_t kSipDisarmUs = 150000;  // frozen start point
+// D33: puff mode 0 hold / 1 toggle / 2 repeat; period in milliseconds.
+static const uint8_t kPuffMode = 0;
+static const uint32_t kPuffRepeatMs = 600;
+// D34: sip -> one jump tap; a longer sip can still disarm (0 disables it).
+static const bool kSipJump = true;
+static const uint32_t kSipDisarmMs = 1500;
 // Long sip arms ([Z] section 6): DISARMED + D6 closed + sip >= 1 s. The
 // serial "arm" stays as the bench fallback. With kDisarmOnSerialClose the
 // enable input also needs the serial port open.

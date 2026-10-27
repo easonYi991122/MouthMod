@@ -1,8 +1,8 @@
 // Minecraft Education adapter: channel levels -> USB keyboard + mouse reports.
 //
-// Frozen mapping (guide §b/§c, [E] §4–5): joystick -> W/A/S/D held; bite ->
-// one Space tap per rising edge; puff -> left button, held while puffing
-// (attack / mine; press and release both delivered; D29); head tilt -> mouse motion. Sip/D6 disarm is the caller's job:
+// Joystick -> W/A/S/D held; bite or enabled sip -> one Space tap per edge
+// (D34); puff -> left button, hold/toggle/repeat (D33); head -> mouse motion.
+// Sip/D6 disarm is the caller's job:
 // it calls releaseAll() and stops passing allowActions.
 //
 // Delivery rules from the HID section of the guide:
@@ -40,13 +40,17 @@ struct GameIntent {
   bool left;
   bool right;
   bool jump;  // bite active: one Space tap per rising edge, never repeats
-  bool use;   // puff active: left button held while active
+  bool use;   // puff level; interpreted according to puffMode
+  bool sip;   // sip level, separate edge detector so an overlapping bite is safe
 };
 
 GameIntent noGameIntent();
 
 struct GameInputParams {
   uint32_t minPressUs;  // shortest Space / left-button hold the host sees
+  uint8_t puffMode;     // 0 hold, 1 toggle, 2 repeat
+  uint32_t puffRepeatMs;
+  bool sipJump;
 };
 
 GameInputParams defaultGameInputParams();
@@ -66,7 +70,7 @@ class GameInput {
  public:
   GameInput();
 
-  void setParams(const GameInputParams& p) { params_ = p; }
+  void setParams(const GameInputParams& p);
   const GameInputParams& params() const { return params_; }
 
   // Clears every action and forces one neutral keyboard and mouse report
@@ -74,7 +78,7 @@ class GameInput {
   void releaseAll();
 
   // Once per loop. allowActions = state is ACTIVE and output is permitted;
-  // when false every action is released (Space/right go up at once).
+  // when false every action is released (Space/left button go up at once).
   void update(uint64_t nowUs, const GameIntent& in, bool allowActions);
 
   // The one report to send this loop; dx/dy are the look deltas available.
@@ -114,6 +118,9 @@ class GameInput {
   Pulse jump_;
   Pulse use_;
   bool useLevel_;
+  bool useToggled_;
+  bool repeatEnabled_;
+  bool sipPrevLevel_;
   uint8_t sentKeys_[6];
   uint8_t sentButtons_;
   bool forceKeyboard_;
