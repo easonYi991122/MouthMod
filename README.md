@@ -122,11 +122,11 @@ python3 tools/look_demo/bridge.py   # 在仓库根目录运行
 | `hang` | 仅在看门狗开启时可用：让主循环卡死，用来测试看门狗复位（复位后应为 DISARMED，`#I` 里 `reset=watchdog`） |
 | `jspan` | 仅 DISARMED 时可用：先保持松杆，再在 6 s 内把四个方向各推到舒适的极限，记录每人的摇杆行程 |
 | `set <jon\|joff\|jswap\|jinvx\|jinvy> <v>` | 摇杆的触发/释放阈值（按跨度归一化）、交换轴、反转方向 |
-| `set <bsign\|bon\|boff\|son\|soff\|brel> <v>` | 吹吸：符号（±1）、吹气触发/释放、吸气触发/释放（counts）、释放延迟（ms）。`ksign/kon/koff` 对应咬合 |
+| `set <bsign\|bon\|boff\|son\|soff\|brel> <v>` | 吹吸：符号（±1）、吹气触发/释放、吸气触发/释放（counts）、释放延迟（ms）。`ksign/kon/koff` 对应咬合；`slock` 是吹气结束后多久内不算吸气（ms，D31） |
 | `turn <counts> [cps]` | 仅 ACTIVE 时可用：以给定速率发出正好这么多的鼠标 X 计数（期间头部视角暂停），用来测游戏里的度/计数和鼠标线性 |
 
 板子输出的行：`#I` 身份/元数据，`#P` 参数，`#Q` 摇杆/压力通道参数，`S,` 通道数据（20 Hz，列名见 `#HS`），`#C` 校准结果，`#E` 事件，`#K` 主机实际收到的按键/右键状态（变化时才输出），`#F` 前台门控变化，`#OK/#ERR` 命令回执，`D,` 数据行。
-`D` 行各列：`t_ms, loop_dt_us, state, imu_new, imu_age_ms, ax_g, ay_g, az_g, gx_dps, gy_dps, gz_dps, roll_deg, pitch_deg, roll_err, pitch_err, vx_cps, vy_cps, dx, dy, hid, engaged, log_dropped, event`。
+`D` 行各列：`t_ms, loop_dt_us, state, imu_new, imu_age_ms, ax_g, ay_g, az_g, gx_dps, gy_dps, gz_dps, roll_deg, pitch_deg, look_x_err, look_y_err, vx_cps, vy_cps, dx, dy, hid, engaged, log_dropped, event`。`look_x_err, look_y_err` 是按 `hsrc/vsrc` 选好来源后的左右、上下误差（v0.7.0 之前叫 `roll_err, pitch_err`，默认设置下数值相同）。
 其中加速度和陀螺是头部坐标系下的值（x 前、y 左、z 上），陀螺已去零偏；`dx/dy` 是相邻两行之间实际提交的计数之和；`engaged` 是两位数字，分别表示 X 轴和 Y 轴是否越过死区。
 发送是有界的：缓冲区不够时丢弃这一行并计入 `log_dropped`，不会阻塞主循环。
 
