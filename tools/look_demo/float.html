@@ -57,6 +57,7 @@ input[type=number], input[type=text] { width: 100%; font: inherit; padding: 2px 
     <button id="btnPip" style="margin-left:auto">弹出置顶悬浮窗</button>
   </div>
   <div id="link" class="muted">等待本地桥</div>
+  <div id="fwVer" class="muted"></div>
   <div id="front" class="muted" style="margin-top:4px">前台: ?</div>
   <span id="fcalTag" class="muted">精细校准 —</span>
 
@@ -127,7 +128,17 @@ const STATE = {
 let D = null, S = null, P = {}, Q = {}, keys = '-', btn = '0', front = null, frontName = '?';
 let logLines = [], sumX = 0, sumY = 0, rateX = 0, rateY = 0, rateT = performance.now();
 let lastDraw = 0, faultWhy = '';
-let FC = null, fusion = null, capturePose = null, captureTimer = null, fineCompleted = false;
+let FC = null, fusion = null, capturePose = null, captureTimer = null, fineCompleted = false, fwVer = null;
+// The fine-calibration protocol this panel speaks (D40); older boards cannot record.
+const FW_NEEDED = [0, 8, 1];
+function fwOld() {
+  if (fwVer === null) return false;
+  const v = fwVer.split(/[.-]/).slice(0, 3).map(Number);
+  if (v.length < 3 || !v.every(Number.isFinite)) return true;
+  for (let i = 0; i < 3; ++i) if (v[i] !== FW_NEEDED[i]) return v[i] < FW_NEEDED[i];
+  return false;
+}
+const FW_OLD_TEXT = () => `板子固件是 ${fwVer}，精细校准需要 0.8.1 及以上：请刷新版 ImuBench.uf2。`;
 const poseFailures = new Set();
 // Why the board is latched in FAULT; the #E line scrolls out of the log fast.
 const FAULT_WHY = {
@@ -268,7 +279,12 @@ async function captureFine(pose) {
   capturePose = pose; poseFailures.delete(pose); showFine();
   const active = D && D[3] === 'ACTIVE';
   fcalMessage(active ? '已请求停用，随后记录；请保持静止半秒。' : '请保持当前姿势静止半秒。');
-  captureTimer = setTimeout(() => { endCapture(); fcalMessage('记录未确认，请刷新后重试。'); }, 4000);
+  if (fwOld()) { endCapture(); fcalMessage(FW_OLD_TEXT()); return; }
+  captureTimer = setTimeout(() => {
+    endCapture();
+    fcalMessage(fwVer === null ? '板子 4 秒内没有回应。请确认板子已连接、固件是 0.8.1，并重开悬浮窗。'
+      : '板子 4 秒内没有回应记录结果，请重试；仍不行就重开悬浮窗。');
+  }, 4000);
   // Await the bridge write so disarm reaches the serial port before capture.
   if (active && !await cmd('disarm')) { endCapture(); fcalMessage('停用发送失败，请重试。'); return; }
   if (capturePose !== pose) return;
@@ -389,6 +405,13 @@ function handle(line) {
       showFusion();
       break;
     case '#FC': if (parts.length > 1) handleFine(parts); break;
+    case '#I': {
+      fwVer = kv(parts.slice(1)).ver || null;
+      $('fwVer').textContent = fwVer ? '固件 ' + fwVer : '';
+      $('fwVer').style.color = fwOld() ? 'var(--warn)' : '';
+      if (fwOld()) fcalMessage(FW_OLD_TEXT());
+      break;
+    }
     case '#Q': Q = kv(parts.slice(1)); syncFields('channels'); break;
     case '#K': { const i = kv(parts.slice(2)); keys = i.keys || '-'; btn = i.left || '0'; break; }
     case '#F': log('前台门控: ' + (kv(parts.slice(2)).front === '1' ? '放行' : '拦截')); break;
@@ -397,6 +420,8 @@ function handle(line) {
       log('事件 ' + parts.slice(2).join(' → ')); break;
     case '#ERR':
       if (parts[1] in FC_ERRORS) { endCapture(); fcalMessage(FC_ERRORS[parts[1]]); log(FC_ERRORS[parts[1]]); }
+      else if (parts[1] === 'unknown fcal') { endCapture(); fcalMessage('板子固件太旧，不认识精细校准命令：请刷 0.8.1 的 ImuBench.uf2。'); log(line); }
+      else if (capturePose && parts[1].startsWith('fcal')) { endCapture(); fcalMessage('记录失败：' + parts.slice(1).join(',')); log(line); }
       else log(line);
       break;
     case '#OK': case '#C': log(line); break;
@@ -406,7 +431,7 @@ function handle(line) {
       else {
         $('link').textContent = '板子 ' + parts.slice(1, 3).join(' ');
         if (parts[1] === 'connected' || parts[1] === 'disconnected') {
-          FC = null; fusion = null; poseFailures.clear(); endCapture(); showFusion(); fcalMessage('');
+          FC = null; fusion = null; fwVer = null; $('fwVer').textContent = ''; poseFailures.clear(); endCapture(); showFusion(); fcalMessage('');
         }
         if (parts[1] === 'connected') { send('get'); send('fgate ' + ($('chkGate').checked ? 1 : 0)); }
       }
