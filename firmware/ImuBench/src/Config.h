@@ -9,7 +9,7 @@ namespace cfg {
 
 // --- Build / identity ---
 static const char* const kFirmwareName = "MouthMod-ImuBench";
-static const char* const kFirmwareVersion = "0.8.0";
+static const char* const kFirmwareVersion = "0.8.1";
 
 // --- Loop ---
 static const uint32_t kLoopPeriodUs = 10000;  // 100 Hz, non-blocking (frozen)
@@ -46,14 +46,14 @@ static const float kKxCpsPerDeg = 40.0f;      // provisional, counts/s per deg
 static const float kKyCpsPerDeg = 30.0f;      // provisional
 static const float kMaxPendingCounts = 64.0f; // stale-motion cap per axis
 
-// D37 fusion, D38 look law, D39 fine calibration: preserve v0.7.0 defaults.
+// D37 fusion, D38 look law, D39 fine calibration: preserve v0.7.0 defaults
+// (fine calibration starts off).
 static const uint8_t kFusionMode = 0;
 static const float kArmXMetres = 0.10f, kArmZMetres = -0.05f;
 static const float kAccelRejectG = 0.15f;
 static const uint8_t kLookMode = 0;
 static const float kGyroGainX = 8.0f, kGyroGainY = 8.0f;
 static const float kGyroDeadDps = 3.0f;
-static const bool kFineAutoSource = true;  // fine calibration starts off
 
 // --- Safety inputs ---
 // D6 caregiver switch (INPUT_PULLUP, closed to GND = enable). Off on the

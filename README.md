@@ -13,7 +13,8 @@ MouthMod/
     src/hardware/ImuReader.*    板载 LSM6DS3TR-C（内部 Wire1, 0x6A），轮询 + 每次 I2C 都检查
     src/hardware/HidOutput.*    TinyUSB 键盘+鼠标复合 HID，release-all 优先
     src/logic/                  纯逻辑：安装方向、互补滤波、静止校准、视角映射、状态机
-    src/logic/FineCalibration.* 五点精细校准（中立、左、右、低、抬头，D39）
+    src/logic/FineCalibration.* 五点精细校准：只求左右/上下转轴（D39、D40）
+    src/logic/HeadDeviation.*   中立位起的头部偏离量，不受安装方向影响（D40）
     src/logic/GameInput.*       Minecraft Education 适配：各通道电平 → 完整键盘状态 + 鼠标报告
     src/logic/JoystickMapper.*  摇杆 → W/A/S/D（移植自组员代码，按规格归一化与迟滞）
     src/logic/PressureChannel.* HX710B 压力 → 吹/吸/咬（移植自组员代码，带符号、基线跟踪）
@@ -120,8 +121,8 @@ python3 tools/look_demo/bridge.py   # 在仓库根目录运行
 | `chan <joy\|breath\|bite> <0\|1>` | 打开或关闭某个通道（默认摇杆、吹吸打开，咬合关闭）。没接的传感器要先关掉；切换后会停用 |
 | `set <hsrc\|vsrc\|deadx\|deady\|yawtau> <v>` | v0.7.0：视角左右/上下来源（0 roll、1 pitch、2 yaw）、分轴起转角、yaw 回零时间（D33）；`D` 行第 14/15 列改为映射后的左右/上下误差（`look_x_err,look_y_err`） |
 | `set <jonx\|jony\|joffx\|joffy\|pmode\|prep\|sjump\|sdis> <v>` | v0.7.0：摇杆分轴阈值、吹气模式和连点间隔、吸气跳跃、吸气停用时长（D33–D35）；桥的 `GET/POST /profile` 读写保存的参数（D36） |
-| `set <fuse\|armx\|armz\|arej\|lmode\|kgx\|kgy\|gdead\|fauto> <v>` | v0.8.0：融合模式与力臂、加速度拒绝；控制方式（倾角 / 角速度 / 混合）与角速度增益、死区；精细校准自动选轴（D37–D39） |
-| `fcal [n\|l\|r\|d\|u\|on\|off\|clear]` / `fcal val <pose> <roll> <pitch> <yaw>` | v0.8.0：五点精细校准；回 `#FC,on=..,have=..,hsrc=..,vsrc=..,n=r/p/y,...`（D39） |
+| `set <fuse\|armx\|armz\|arej\|lmode\|kgx\|kgy\|gdead> <v>` | v0.8.0：融合模式与力臂、加速度拒绝；控制方式（倾角 / 角速度 / 混合）与角速度增益、死区（D37、D38）。`fauto` 自 v0.8.1 起不再使用，仍接受 |
+| `fcal [n\|l\|r\|d\|u\|on\|off\|clear]` / `fcal val n <roll> <pitch> 0` / `fcal rel <l\|r\|d\|u> <x> <y> <yaw>` | 五点精细校准，只求左右/上下转轴，五步齐了自动启用；回 `#FC,on=..,have=..,h=x/y/z,v=x/y/z,n=roll/pitch/0,l=..`（l/r/d/u 为相对中立的偏离，单位度）；基础校准后另有 `#FC,neutral,n`（D39、D40） |
 | `fgate 0\|1` / `focus 0\|1` | 前台门控开关 / 由桥周期发送的「Minecraft 在前台」心跳（见 D28） |
 | `hang` | 仅在看门狗开启时可用：让主循环卡死，用来测试看门狗复位（复位后应为 DISARMED，`#I` 里 `reset=watchdog`） |
 | `jspan` | 仅 DISARMED 时可用：先保持松杆，再在 6 s 内把四个方向各推到舒适的极限，记录每人的摇杆行程 |

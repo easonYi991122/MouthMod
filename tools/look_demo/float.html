@@ -89,10 +89,9 @@ input[type=number], input[type=text] { width: 100%; font: inherit; padding: 2px 
   </details>
   <details id="fineCalibration"><summary>精细校准</summary>
     <div class="muted" style="margin-top:6px">中立 → 左转 → 右转 → 低头 → 抬头；每次保持静止半秒。</div>
-    <div class="muted">提示: 先完成一次基础校准(启用)可让转头 yaw 也能用</div>
-    <div id="fcalStatus" class="muted" role="status">精细校准 — · 左右来源 — · 上下来源 —</div>
+    <div class="muted">先点一次「启用」完成基础校准（静止 3 秒）再记录。五步记完自动启用；之后每次「启用」只更新中立位，转轴沿用。精细校准只定左右、上下的转动方向，起转角、封顶、增益仍在「视角」里按度调；开启时不用「左右来源 / 上下来源」。</div>
+    <div id="fcalStatus" class="muted" role="status">精细校准 — · 左右轴 — · 上下轴 —</div>
     <div id="fcalPoses"></div>
-    <div id="fineFields" class="fields"></div>
     <div class="row" style="margin-top:6px">
       <button id="fcalOn" data-cmd="fcal on">启用精细校准</button>
       <button id="fcalOff" data-cmd="fcal off">关闭</button>
@@ -128,7 +127,7 @@ const STATE = {
 let D = null, S = null, P = {}, Q = {}, keys = '-', btn = '0', front = null, frontName = '?';
 let logLines = [], sumX = 0, sumY = 0, rateX = 0, rateY = 0, rateT = performance.now();
 let lastDraw = 0, faultWhy = '';
-let FC = null, fusion = null, capturePose = null, captureTimer = null;
+let FC = null, fusion = null, capturePose = null, captureTimer = null, fineCompleted = false;
 const poseFailures = new Set();
 // Why the board is latched in FAULT; the #E line scrolls out of the log fast.
 const FAULT_WHY = {
@@ -150,7 +149,7 @@ function log(t) {
 }
 
 // A missing report stays visibly unknown; users can still choose a value.
-const SOURCES = [['0', '侧倾 roll'], ['1', '俯仰 pitch'], ['2', '转头 yaw·实验']];
+const SOURCES = [['0', '侧倾 roll'], ['1', '俯仰 pitch'], ['2', '转头 yaw']];
 const FIELDS = [
   ['look', 'fuse', '融合模式', [['0', '基本互补'], ['1', '加速度+角速度融合']]],
   ['look', 'armx', '力臂前 armx (m)', 0.001], ['look', 'armz', '力臂上 armz (m)', 0.001],
@@ -164,7 +163,6 @@ const FIELDS = [
   ['look', 'deadx', '左右起转角 °', 0.01], ['look', 'deady', '上下起转角 °', 0.01],
   ['look', 'confirm', '确认 confirm (ms)', 1], ['look', 'hyst', '迟滞 hyst (°)', 0.01],
   ['look', 'yawtau', '回零 yawtau (s)', 0.1],
-  ['fine', 'fauto', '自动选轴', 'check'],
   ['joy', 'jonx', '左右触发 jonx', 0.001], ['joy', 'jony', '前后触发 jony', 0.001],
   ['joy', 'joffx', '左右释放 joffx', 0.001], ['joy', 'joffy', '前后释放 joffy', 0.001],
   ['joy', 'jswap', '交换 XY', 'check'], ['joy', 'jinvx', '摇杆 X 取反', 'check'], ['joy', 'jinvy', '摇杆 Y 取反', 'check'],
@@ -206,7 +204,7 @@ for (const [group, key, label, kind] of FIELDS) {
 function syncFields(group) {
   const values = group === 'look' ? P : Q;
   for (const [section, key, , kind, reported = key] of FIELDS) {
-    if ((group === 'look') !== (section === 'look' || section === 'fine')) continue;
+    if ((group === 'look') !== (section === 'look')) continue;
     const el = $('p_' + key), known = reported in values;
     $('missing_' + key).textContent = known ? '' : '—';
     if (el.ownerDocument.activeElement === el) continue;
@@ -233,8 +231,10 @@ const POSES = [
   ['u', '抬头', '做出希望向上看的姿势，保持静止。'],
 ];
 const FC_ERRORS = {
-  fcal_bad_h: '左右姿势无效：请向中立两侧各转至少 3°，或开启自动选轴。',
-  fcal_bad_v: '上下姿势无效：请向中立两侧各转至少 3°，或开启自动选轴。',
+  fcal_bad_h: '左右姿势无效：左转、右转要在中立两侧，各离中立至少 3°。',
+  fcal_bad_v: '上下姿势无效：低头、抬头要在中立两侧，各离中立至少 3°。',
+  fcal_bad_axes: '左右和上下的转动方向太接近，请重新记录低头、抬头（或左转、右转）。',
+  fcal_need_basic: '请先点一次「启用」完成基础校准（静止 3 秒），再记录。',
   fcal_incomplete: '姿势未齐，请完成五步记录。',
   fcal_need_neutral: '请先记录中立姿势。',
   fcal_active: '板子仍在启用，请先停用再记录。',
@@ -244,12 +244,19 @@ function fcalMessage(text) { $('fcalMessage').textContent = text; }
 function endCapture() { clearTimeout(captureTimer); captureTimer = null; capturePose = null; showFine(); }
 function showFine() {
   const on = FC ? (FC.on === '1' ? '开' : '关') : '—';
-  const source = (v) => ({ 0: '侧倾 roll', 1: '俯仰 pitch', 2: '转头 yaw' })[v] || '—';
+  // Axis "x/y/z" in head-deviation space -> its main components.
+  const axis = (text) => {
+    const v = (text || '').split('/').map(Number);
+    if (v.length !== 3 || !v.every(Number.isFinite)) return '—';
+    return ['侧倾', '俯仰', '转头'].map((name, i) => [name, v[i]]).filter(([, x]) => Math.abs(x) >= 0.2)
+      .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1])).map(([name, x]) => `${name} ${x.toFixed(2)}`).join(' + ') || '—';
+  };
   $('fcalTag').textContent = '精细校准 ' + on;
-  $('fcalStatus').textContent = `精细校准 ${on} · 左右来源 ${source(FC && FC.hsrc)} · 上下来源 ${source(FC && FC.vsrc)}`;
+  $('fcalStatus').textContent = `精细校准 ${on} · 左右轴 ${axis(FC && FC.h)} · 上下轴 ${axis(FC && FC.v)}`;
   for (const [pose] of POSES) {
     const values = FC && FC.poses[pose];
-    const saved = values ? `✓ roll ${values[0]}° / pitch ${values[1]}° / yaw ${values[2]}°` : '未记录';
+    const saved = !values ? '未记录' : pose === 'n' ? `✓ roll ${values[0]}° / pitch ${values[1]}°`
+      : `✓ 相对中立：侧倾 ${values[0]}° / 俯仰 ${values[1]}° / 转头 ${values[2]}°`;
     $('fcal_' + pose + '_status').textContent = capturePose === pose ? '记录中，请保持静止…'
       : poseFailures.has(pose) ? '动了，重来' + (values ? '（上次：' + saved + '）' : '') : saved;
     $('fcal_' + pose).disabled = !!capturePose || (pose !== 'n' && !(FC && FC.poses.n));
@@ -287,15 +294,20 @@ function handleFine(parts) {
       if (angles.length === 3 && angles.every((v) => v.trim() !== '' && Number.isFinite(Number(v)))) poses[pose] = angles;
     }
     FC = { ...report, poses };
+    if (fineCompleted && FC.on === '1') fcalMessage('精细校准已启用。起转角、封顶、增益仍在「视角」里按度调节。');
+    fineCompleted = false;
   } else if (parts[1] === 'fail_motion') {
     poseFailures.add(parts[2]); endCapture(); fcalMessage('动了，重来：保持静止半秒再记录。');
   } else if (parts[1] === 'captured') {
     poseFailures.delete(parts[2]); endCapture();
     const next = POSES.find(([pose]) => pose !== parts[2] && !(FC && FC.poses[pose]));
-    fcalMessage(next ? `已记录，下一步：${next[1]}。` : '五步记录完成，可启用精细校准。');
+    fineCompleted = !next;
+    fcalMessage(next ? `已记录，下一步：${next[1]}。` : '五步记录完成，正在启用精细校准…');
+  } else if (parts[1] === 'neutral') {
+    fcalMessage('基础校准已把精细校准的中立位更新为当前姿势，转轴沿用。');
   } else if (parts[1] === 'off_invalid') {
     if (FC) FC.on = '0';
-    fcalMessage('当前选轴不适合已记录姿势，精细校准已关闭。');
+    fcalMessage('姿势改动后转轴无效，精细校准已关闭。');
   } else if (parts[1] === 'cleared_mount') {
     FC = { on: '0', poses: {} }; poseFailures.clear(); endCapture();
     fcalMessage('安装方向已改变，请重新记录五个姿势。');
@@ -338,7 +350,8 @@ async function saveProfile(clear) {
     }
     if (!FC || capturePose) { profileStatus('默认配置：请先刷新并等待精细校准状态'); return; }
     for (const [pose] of POSES) {
-      if (FC.poses[pose]) lines.push(`fcal val ${pose} ${FC.poses[pose].join(' ')}`);
+      // n absolute; l,r,d,u relative to n (v0.8.1).
+      if (FC.poses[pose]) lines.push(`fcal ${pose === 'n' ? 'val' : 'rel'} ${pose} ${FC.poses[pose].join(' ')}`);
     }
     if (FC.on === '1') lines.push('fcal on');
     lines.push('fgate ' + ($('chkGate').checked ? 1 : 0)); body = lines.join('\n');

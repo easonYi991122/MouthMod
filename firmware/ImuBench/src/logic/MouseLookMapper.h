@@ -80,8 +80,7 @@ class MouseLookMapper {
 
   // Source selection happens in LookController; inversion happens here.
   LookVelocity update(float xErrDeg, float yErrDeg, float dtS = 0.01f,
-                      float xRateDps = 0, float yRateDps = 0,
-                      float xFineScale = 1, float yFineScale = 1);
+                      float xRateDps = 0, float yRateDps = 0);
 
  private:
   MouseLookParams params_;

@@ -159,7 +159,7 @@ void printParams() {
         "confirm=%.0f,invx=%u,invy=%u,alpha=%.4f,mount=%s%s,hid=%u,rate=%u,"
         "fgate=%u,hsrc=%u,vsrc=%u,yawtau=%.1f,deadx=%.2f,deady=%.2f,"
         "fuse=%u,armx=%.3f,armz=%.3f,arej=%.3f,"
-        "lmode=%u,kgx=%.2f,kgy=%.2f,gdead=%.2f,fauto=%u\n",
+        "lmode=%u,kgx=%.2f,kgy=%.2f,gdead=%.2f\n",
         p.kxCpsPerDeg, p.kyCpsPerDeg, p.deadbandDeg[0], p.hysteresisDeg,
         p.saturationDeg, p.hystMode, p.velMode, p.engageConfirmS * 1e3f,
         p.invertX ? 1U : 0U,
@@ -169,13 +169,11 @@ void printParams() {
         static_cast<unsigned>(p.hsrc), static_cast<unsigned>(p.vsrc),
         p.yawTauS, p.deadbandDeg[0], p.deadbandDeg[1],
         static_cast<unsigned>(f.mode), f.armX, f.armZ, f.accelRejectG,
-        static_cast<unsigned>(p.lmode), p.kgx, p.kgy, p.gyroDeadDps,
-        gLook.fineCalibration().autoSource() ? 1U : 0U);
+        static_cast<unsigned>(p.lmode), p.kgx, p.kgy, p.gyroDeadDps);
 }
 
 void printFineCalibration() {
   const FineCalibration& f = gLook.fineCalibration();
-  const MouseLookParams& p = gLook.lookParams();
   const char* letters = "nlrdu";
   char have[6] = "";
   char poses[5][144];
@@ -190,10 +188,16 @@ void printFineCalibration() {
     }
   }
   have[n] = '\0';
-  emitf("#FC,on=%u,have=%s,hsrc=%u,vsrc=%u,n=%s,l=%s,r=%s,d=%s,u=%s\n",
-        f.on() ? 1U : 0U, have, static_cast<unsigned>(p.hsrc),
-        static_cast<unsigned>(p.vsrc), poses[0], poses[1], poses[2],
-        poses[3], poses[4]);
+  // D39 v0.8.1: n absolute roll/pitch; l,r,d,u and the axes in deviation space.
+  char axes[2][48];
+  for (unsigned a = 0; a < 2; ++a) {
+    const Vec3 u = f.axis(a);
+    if (f.on()) snprintf(axes[a], sizeof(axes[a]), "%.2f/%.2f/%.2f", u.x, u.y, u.z);
+    else strcpy(axes[a], "-");
+  }
+  emitf("#FC,on=%u,have=%s,h=%s,v=%s,n=%s,l=%s,r=%s,d=%s,u=%s\n",
+        f.on() ? 1U : 0U, have, axes[0], axes[1], poses[0], poses[1],
+        poses[2], poses[3], poses[4]);
 }
 
 void handleFineCalibration(int argc, char** argv) {
@@ -203,7 +207,6 @@ void handleFineCalibration(int argc, char** argv) {
     // Report only.
   } else if (argc == 2 && !strcmp(argv[1], "on")) {
     error = gLook.enableFineCalibration();
-    if (!error && f.autoSource()) printParams();
   } else if (argc == 2 && !strcmp(argv[1], "off")) {
     f.off();
     f.cancel();
@@ -212,19 +215,22 @@ void handleFineCalibration(int argc, char** argv) {
   } else if (argc == 2 && strlen(argv[1]) == 1 &&
              FineCalibration::poseIndex(argv[1][0]) >= 0) {
     error = gLook.startFineCapture(argv[1][0], nowUs());
-  } else if (argc == 6 && !strcmp(argv[1], "val") && strlen(argv[2]) == 1 &&
-             FineCalibration::poseIndex(argv[2][0]) >= 0) {
+  } else if (argc == 6 && (!strcmp(argv[1], "val") || !strcmp(argv[1], "rel")) &&
+             strlen(argv[2]) == 1 && FineCalibration::poseIndex(argv[2][0]) >= 0) {
+    // rel: l,r,d,u as deviation from n (v0.8.1 profile); val: v0.8.0 absolute.
     float a[3];
     for (unsigned i = 0; i < 3; ++i) {
       char* end = 0;
       a[i] = strtof(argv[i + 3], &end);
       if (end == argv[i + 3] || *end || !isfinite(a[i])) error = "fcal_value";
     }
+    const Vec3 v = makeVec3(a[0], a[1], a[2]);
     if (!error) {
       f.cancel();
-      f.setPose(argv[2][0], makeVec3(a[0], a[1], a[2]));
-      const MouseLookParams& p = gLook.lookParams();
-      if (f.on() && !f.validSources(gLook.calibrated(), p.hsrc, p.vsrc)) f.off();
+      const bool ok = argv[1][0] == 'r' ? f.setRelative(argv[2][0], v)
+                                         : f.setAbsolute(argv[2][0], v);
+      if (!ok) error = "fcal_need_neutral";
+      else if (f.on() && f.enable()) emit("#FC,off_invalid\n");
     }
   } else {
     error = "fcal_command";
@@ -312,10 +318,8 @@ bool setParam(const char* name, const char* value) {
   else if (!strcmp(name, "armx")) fusion.armX = v;
   else if (!strcmp(name, "armz")) fusion.armZ = v;
   else if (!strcmp(name, "arej")) fusion.accelRejectG = v;
-  else if (!strcmp(name, "fauto")) {
-    gLook.fineCalibration().setAutoSource(v != 0);
-    return true;
-  } else fusionParam = false;
+  else if (!strcmp(name, "fauto")) return true;  // v0.8.0 profiles; unused
+  else fusionParam = false;
   if (fusionParam) {
     gLook.setFusionParams(fusion);
     return true;
@@ -352,7 +356,7 @@ bool setParam(const char* name, const char* value) {
   } else {
     return false;
   }
-  if (gLook.setLookParams(p)) emit("#FC,off_invalid\n");
+  gLook.setLookParams(p);
   return true;
 }
 
@@ -797,6 +801,7 @@ void controlTick(uint64_t t) {
   if (k.fineEvent) {
     if (!strncmp(k.fineEvent, "fcal_", 5)) emitf("#ERR,%s\n", k.fineEvent);
     else emitf("#FC,%s,%c\n", k.fineEvent, k.finePose);
+    if (k.fineError) emitf("#ERR,%s\n", k.fineError);
     printFineCalibration();
   }
   if (k.releaseAll) {
@@ -927,7 +932,6 @@ void appSetup() {
   fusion.armZ = cfg::kArmZMetres;
   fusion.accelRejectG = cfg::kAccelRejectG;
   gLook.setFusionParams(fusion);
-  gLook.fineCalibration().setAutoSource(cfg::kFineAutoSource);
   MouseLookParams p = defaultMouseLookParams();
   p.lmode = cfg::kLookMode;
   p.kgx = cfg::kGyroGainX; p.kgy = cfg::kGyroGainY;

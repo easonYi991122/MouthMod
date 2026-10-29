@@ -16,6 +16,7 @@
 
 #include "ComplementaryFilter.h"
 #include "FineCalibration.h"
+#include "HeadDeviation.h"
 #include "MountFrame.h"
 #include "MouseLookMapper.h"
 #include "StillCalibration.h"
@@ -48,7 +49,8 @@ struct LookTick {
   float lookYErrDeg;
   LookVelocity velocity;   // zero unless ACTIVE
   bool releaseAll;         // state left ACTIVE / entered a no-output state
-  const char* fineEvent;   // captured / fail_motion / fcal_active / fcal_fault
+  const char* fineEvent;   // captured / fail_motion / neutral / fcal_active / fcal_fault
+  const char* fineError;   // fcal_bad_* when a completed pose set cannot enable
   char finePose;
   const char* event;       // static string or 0
 };
@@ -70,8 +72,7 @@ class LookController {
   const MountFrame& mount() const { return mount_; }
   void setAlpha(float alpha) { filter_.setAlpha(alpha); }
   float alpha() const { return filter_.alpha(); }
-  // Returns true when an invalid source change disabled fine calibration.
-  bool setLookParams(const MouseLookParams& p);
+  void setLookParams(const MouseLookParams& p) { mapper_.setParams(p); }
   void setFusionParams(const FusionParams& p);
   const FusionParams& fusionParams() const { return fusion_; }
   const ComplementaryFilter& filter() const { return filter_; }
@@ -112,7 +113,8 @@ class LookController {
   ComplementaryFilter filter_;
   FusionParams fusion_;
   FineCalibration fine_;
-  Vec3 sourceRates_;
+  HeadFrame frame_;        // neutral of the last basic calibration (D40)
+  Vec3 headRates_;
   StillCalibration calibration_;
   MouseLookMapper mapper_;
 

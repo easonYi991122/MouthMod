@@ -1,4 +1,4 @@
-// Frozen v0.8.0 protocol: synthetic physics and controller/profile scenarios.
+// v0.8.0 protocol (fine calibration as revised in v0.8.1): synthetic physics and controller/profile scenarios.
 #include <cassert>
 #include <cmath>
 #include <cstdio>
@@ -45,11 +45,12 @@ struct Sim {
   }
 };
 void poses(FineCalibration* f) {
-  assert(f->setPose('n', makeVec3(5, -2, 0)));
-  assert(f->setPose('l', makeVec3(-5, -2, -8)));
-  assert(f->setPose('r', makeVec3(25, -2, 12)));
-  assert(f->setPose('d', makeVec3(5, 8, 0)));
-  assert(f->setPose('u', makeVec3(5, -22, 0)));
+  // Neutral is absolute; the others are head deviations from it (degrees).
+  assert(f->setNeutral(5, -2));
+  assert(f->setRelative('l', makeVec3(-1, 0, -12)));
+  assert(f->setRelative('r', makeVec3(2, 0, 15)));
+  assert(f->setRelative('d', makeVec3(0, 10, 0)));
+  assert(f->setRelative('u', makeVec3(0, -14, 0)));
 }
 
 void test_fuse0_v070_golden_trace() {
@@ -156,10 +157,10 @@ void test_lmode_gyro_hybrid_clamp_invert_and_scale() {
   assert(v.vxCps == 0 && v.vyCps == 0);
   p.lmode = 2; p.kxCpsPerDeg = 10; p.kyCpsPerDeg = 20;
   p.invertX = p.invertY = true; m.setParams(p);
-  v = m.update(10, -10, 0.01f, 13, -5, -2, 0.5f);
-  assert(near(v.vxCps, 60) && near(v.vyCps, 210));
+  v = m.update(10, -10, 0.01f, 13, -5);
+  assert(near(v.vxCps, -180) && near(v.vyCps, 220));
   p.lmode = 1; m.setParams(p);
-  v = m.update(0, 0, 0.01f, 1000, -1000, 2, 2);
+  v = m.update(0, 0, 0.01f, 1000, -1000);
   assert(v.vxCps == -4000 && v.vyCps == 4000);
   p.lmode = 0; m.setParams(p);
   v = m.update(10, -10, 0.01f, 1000, -1000);
@@ -191,172 +192,222 @@ void test_lmode_selected_rates_and_only_active() {
   assert(out.velocity.vxCps == 0 && out.velocity.vyCps == 0);
 }
 
+void test_head_deviation_wrap_edge_and_rates() {
+  // Upright: matches the Euler differences for moderate angles.
+  HeadFrame f = makeHeadFrame(upFromRollPitch(0, 0));
+  Vec3 d = headDeviation(f, upFromRollPitch(10, 0), 3);
+  assert(near(d.x, 10, 0.01f) && near(d.y, 0, 0.01f) && d.z == 3);
+  d = headDeviation(f, upFromRollPitch(0, -12), 0);
+  assert(near(d.x, 0, 0.01f) && near(d.y, -12, 0.01f));
+  // Board upside down: roll crosses +-180 without a jump of 360 deg.
+  f = makeHeadFrame(upFromRollPitch(178, 0));
+  d = headDeviation(f, upFromRollPitch(-176, 0), 0);
+  assert(near(d.x, 6, 0.01f));
+  d = headDeviation(f, upFromRollPitch(172, 0), 0);
+  assert(near(d.x, -6, 0.01f));
+  // Board on its edge (forward axis vertical): frame from the left axis.
+  f = makeHeadFrame(upFromRollPitch(0, -90));
+  assert(vecFinite(f.rollAxis) && near(vecNorm(f.rollAxis), 1));
+  d = headDeviation(f, upFromRollPitch(0, -80), 0);
+  assert(near(vecNorm(d), 10, 0.01f));
+  // Yaw is about the measured vertical: up along body +Y, right turn = -Y.
+  const Vec3 edgeUp = makeVec3(0, 1, 0);
+  f = makeHeadFrame(edgeUp);
+  assert(near(headRates(f, edgeUp, makeVec3(0, -10, 0)).z, 10));
+  assert(near(headRates(makeHeadFrame(makeVec3(0, 0, 1)), makeVec3(0, 0, 1),
+                        makeVec3(4, 5, -6)).z, 6));
+}
+
 void test_fcal_capture_window_average_and_motion() {
   FineCalibration f;
-  errorIs(f.start('r', 0), "fcal_need_neutral");
-  assert(!f.start('n', 1000));
-  assert(f.addSample(1000, makeVec3(99, 99, 99), true) == 0); // not fresh
+  errorIs(f.start('n', 0, false), "fcal_need_basic");
+  errorIs(f.start('r', 0, true), "fcal_need_neutral");
+  assert(!f.start('n', 1000, true));
+  assert(f.addSample(1000, upFromRollPitch(99, 0), 0) == 0);  // not fresh
   for (int i = 1; i <= 50; ++i) {
     const float roll = i % 2 ? 9 : 11;
-    const int result = f.addSample(1000+i*10000U, makeVec3(roll, 2, 7), true);
+    const int result = f.addSample(1000+i*10000U, upFromRollPitch(roll, 2), 7);
     assert(result == (i == 50 ? 1 : 0));
   }
-  assert(near(f.pose(0).x, 10) && f.pose(0).y == 2 && f.pose(0).z == 0);
-  assert(f.capturedNeutralYaw() == 7);
-  assert(f.setPose('r', makeVec3(20, 2, 10)));
-  assert(!f.start('r', 1000000));
-  assert(f.addSample(1010000, makeVec3(0, 0, 0), true) == 0);
-  assert(f.addSample(1500000, makeVec3(4.01f, 0, 0), true) == -1);
-  assert(f.pose(2).x == 20); // preserve old pose on failure
-  for (unsigned axis = 1; axis <= 2; ++axis) {
-    assert(!f.start('l', 2000000));
-    assert(f.addSample(2010000, kZero, true) == 0);
-    const Vec3 moved = axis == 1 ? makeVec3(0, 4.1f, 0) : makeVec3(0, 0, 4.1f);
-    assert(f.addSample(2500000, moved, true) == -1);
-  }
-  assert(!f.start('l', 3000000));
-  f.addSample(3010000, kZero, false);
-  assert(f.addSample(3500000, makeVec3(4, 4, 100), false) == 1); // yaw unknown
-  assert(!f.start('n', 4000000));
-  f.addSample(4010000, makeVec3(1, 2, 8), true);
-  assert(f.addSample(4500000, makeVec3(1, 2, 8), true) == 1);
-  assert(f.has(1) && f.has(2));  // new N keeps other poses
-  assert(!f.start('n', 5000000));
-  f.addSample(5100000, makeVec3(1, 2, 3), true);
-  assert(f.addSample(5500001, makeVec3(99, 99, 99), true) == 1);
-  assert(f.pose(0).x == 1 && f.pose(0).y == 2); // after-window sample excluded
+  assert(near(f.pose(0).x, 10, 0.01f) && near(f.pose(0).y, 2, 0.01f));
+  assert(f.pose(0).z == 0 && near(f.capturedNeutralYaw(), 7));
+  // Right pose: 8 deg further roll and 12 deg of yaw, stored relative to n.
+  assert(!f.start('r', 1000000, true));
+  for (int i = 1; i <= 50; ++i) f.addSample(1000000+i*10000U, upFromRollPitch(18, 2), 12);
+  assert(f.has(2) && near(f.pose(2).x, 8, 0.05f) && near(f.pose(2).y, 0, 0.05f));
+  assert(near(f.pose(2).z, 12));
+  assert(!f.start('r', 2000000, true));
+  assert(f.addSample(2010000, upFromRollPitch(10, 2), 0) == 0);
+  assert(f.addSample(2500000, upFromRollPitch(10, 2), 4.1f) == -1);  // yaw moved
+  assert(near(f.pose(2).z, 12));  // old pose survives the failure
+  assert(!f.start('l', 3000000, true));
+  f.addSample(3010000, upFromRollPitch(10, 2), 0);
+  assert(f.addSample(3500000, upFromRollPitch(10, 6.2f), 0) == -1);  // tilt moved
+  assert(!f.start('n', 4000000, true));
+  f.addSample(4100000, upFromRollPitch(1, 2), 3);
+  assert(f.addSample(4500001, upFromRollPitch(99, 99), 99) == 1);
+  assert(near(f.pose(0).x, 1, 0.01f) && f.has(2));  // after-window sample excluded
 }
 
-void test_fcal_validation_auto_ties_and_yaw_eligibility() {
-  FineCalibration f; uint8_t h = 0, v = 1;
-  errorIs(f.enable(true, &h, &v), "fcal_incomplete");
+void test_fcal_axes_validation_and_projection() {
+  FineCalibration f;
+  errorIs(f.enable(), "fcal_incomplete");
   poses(&f);
-  assert(!f.enable(true, &h, &v) && h == 0 && v == 1);
-  f.off(); assert(f.has(0) && f.has(4));
-  f.setPose('l', makeVec3(15, -2, -8)); // same-sign roll, valid yaw
-  assert(!f.enable(true, &h, &v) && h == 2);
-  errorIs(f.enable(false, &h, &v), "fcal_bad_h");
-  assert(!f.on());
-  f.setPose('l', makeVec3(2.01f, -2, 0)); // below 3, yaw invalid
-  errorIs(f.enable(true, &h, &v), "fcal_bad_h");
-  f.setPose('l', makeVec3(2, -2, 0)); // exactly 3 accepted
-  assert(!f.enable(false, &h, &v) && h == 0);
-  f.setAutoSource(false); h = 1;
-  errorIs(f.enable(true, &h, &v), "fcal_bad_h");
-  h = 0; v = 0;
-  errorIs(f.enable(true, &h, &v), "fcal_bad_v");
-  v = 1; assert(!f.enable(true, &h, &v));
+  assert(!f.enable() && f.on());
+  // Left/right axis follows the recorded turn (mostly yaw, a little roll).
+  const Vec3 h = f.axis(0), v = f.axis(1);
+  assert(near(h.x, 3/std::sqrt(738.0f), 0.001f) && near(h.z, 27/std::sqrt(738.0f), 0.001f));
+  assert(v.y > 0.99f);
+  float x, y;
+  f.project(makeVec3(0, 0, 15), &x, &y);
+  assert(near(x, 15*h.z, 0.01f) && near(y, 0, 0.05f));  // degrees, not scaled to sat
+  f.project(makeVec3(0, 0, -15), &x, &y);
+  assert(x < -14);  // left turn -> left
+  f.project(makeVec3(0, 20, 0), &x, &y);
+  assert(near(y, 20, 0.2f) && std::fabs(x) < 0.3f);
+  // Mirrored poses reverse the direction: the poses define the sign.
+  f.setRelative('l', makeVec3(0, 0, 12)); f.setRelative('r', makeVec3(0, 0, -15));
+  assert(!f.enable());
+  f.project(makeVec3(0, 0, -15), &x, &y); assert(near(x, 15, 0.01f));
+  // Both on one side, too small, or parallel axes are rejected.
+  f.setRelative('l', makeVec3(0, 0, 4)); f.setRelative('r', makeVec3(0, 0, 15));
+  errorIs(f.enable(), "fcal_bad_h"); assert(!f.on());
+  f.setRelative('l', makeVec3(0, 0, -2.9f)); f.setRelative('r', makeVec3(0, 0, 9));
+  errorIs(f.enable(), "fcal_bad_h");
+  f.setRelative('l', makeVec3(0, 0, -3)); assert(!f.enable());  // exactly 3 accepted
+  f.setRelative('d', makeVec3(0, 1, 9)); f.setRelative('u', makeVec3(0, -1, -9));
+  errorIs(f.enable(), "fcal_bad_axes");
+  f.setRelative('d', makeVec3(0, 2, 0)); f.setRelative('u', makeVec3(0, -2, 0));
+  errorIs(f.enable(), "fcal_bad_v");
   f.clear(); assert(!f.on() && !f.has(0) && !f.has(4));
-  poses(&f); f.setAutoSource(true);
-  f.setPose('l', makeVec3(-5, -12, -10));
-  f.setPose('r', makeVec3(15, 8, 10));
-  assert(!f.enable(true, &h, &v) && h == 0); // tie: roll first
-  f.setPose('l', makeVec3(5, -12, -10));
-  f.setPose('r', makeVec3(5, 8, 10));
-  assert(!f.enable(true, &h, &v) && h == 1); // pitch wins yaw tie
 }
 
-void test_fcal_asymmetric_mapping_and_signed_gyro_scale() {
-  FineCalibration f; poses(&f); uint8_t h = 0, v = 1;
-  assert(!f.enable(true, &h, &v));
-  assert(near(f.map(0, h, 25, 20), 20) && near(f.map(0, h, -5, 20), -20));
-  assert(near(f.map(0, h, 15, 20), 10) && near(f.map(0, h, 0, 20), -10));
-  assert(near(f.map(1, v, 8, 20), 20) && near(f.map(1, v, -22, 20), -20));
-  assert(f.map(0, h, 5, 20) == 0);
-  assert(near(f.gyroScale(0, h, 20), 40.0f/30));
-  f.setPose('r', makeVec3(-15, -2, 0));
-  f.setPose('l', makeVec3(15, -2, 0));
-  assert(!f.enable(true, &h, &v));
-  assert(near(f.map(0, h, -15, 20), 20) && near(f.map(0, h, 15, 20), -20));
-  assert(near(f.gyroScale(0, h, 20), -40.0f/30));
-}
-
-void test_fcal_val_round_trip_and_off_clear() {
+void test_fcal_profile_lines_and_neutral_rebase() {
   FineCalibration f, replay; poses(&f);
   const char* letters = "nlrdu";
   for (unsigned i = 0; i < 5; ++i) {
     const Vec3 a = f.pose(i);
-    char line[128], pose; float roll, pitch, yaw;
-    std::snprintf(line, sizeof(line), "fcal val %c %.2f %.2f %.2f", letters[i], a.x, a.y, a.z);
-    assert(std::sscanf(line, "fcal val %c %f %f %f", &pose, &roll, &pitch, &yaw) == 4);
-    assert(replay.setPose(pose, makeVec3(roll, pitch, yaw)));
+    char line[128], pose; float x, y, z;
+    std::snprintf(line, sizeof(line), "fcal %s %c %.2f %.2f %.2f",
+                  i ? "rel" : "val", letters[i], a.x, a.y, a.z);
+    assert(std::sscanf(line + 9, "%c %f %f %f", &pose, &x, &y, &z) == 4);
+    assert(i ? replay.setRelative(pose, makeVec3(x, y, z))
+             : replay.setAbsolute(pose, makeVec3(x, y, z)));
     const Vec3 b = replay.pose(i);
     assert(a.x == b.x && a.y == b.y && a.z == b.z);
   }
-  uint8_t h = 0, v = 1; assert(!replay.enable(true, &h, &v));
-  replay.off(); assert(!replay.on() && replay.has(4));
-  replay.clear(); for (unsigned i = 0; i < 5; ++i) assert(!replay.has(i));
-  assert(replay.setPose('r', kZero));  // direct profile poses may be replayed in any order
-  assert(!replay.setPose('?', kZero));
-  assert(!replay.setPose('n', makeVec3(NAN, 0, 0)));
+  assert(!replay.enable());
+  // A new neutral keeps the relative poses, so the axes do not change.
+  const Vec3 h = replay.axis(0);
+  assert(replay.setNeutral(20, 10) && !replay.enable());
+  assert(replay.axis(0).x == h.x && replay.axis(0).z == h.z && replay.pose(2).z == 15);
+  // v0.8.0 absolute lines are converted against n.
+  FineCalibration legacy;
+  assert(!legacy.setAbsolute('r', makeVec3(25, -2, 12)));  // needs n first
+  assert(legacy.setAbsolute('n', makeVec3(5, -2, 0)));
+  assert(legacy.setAbsolute('r', makeVec3(25, -2, 12)));
+  assert(near(legacy.pose(2).x, 20, 0.1f) && near(legacy.pose(2).y, 0, 0.2f));
+  assert(legacy.pose(2).z == 12);
+  assert(!replay.setRelative('?', kZero));
+  assert(!replay.setRelative('l', makeVec3(NAN, 0, 0)));
 }
 
-void test_fcal_controller_capture_rejections_and_yaw_reference() {
+void test_fcal_controller_capture_auto_enable_and_yaw_reference() {
   Sim s;
-  errorIs(s.c.startFineCapture('l', s.t), "fcal_need_neutral");
-  assert(!s.c.startFineCapture('n', s.t));
-  s.still(49);
-  assert(!s.c.fineCalibration().has(0));
-  LookTick out = s.step();
-  assert(out.fineEvent && !std::strcmp(out.fineEvent, "captured") && out.finePose == 'n');
+  errorIs(s.c.startFineCapture('n', s.t), "fcal_need_basic");
   s.arm();
   errorIs(s.c.startFineCapture('n', s.t), "fcal_active");
   s.c.requestDisarm(); s.step();
+  errorIs(s.c.startFineCapture('l', s.t), "fcal_need_neutral");
   MouseLookParams p = s.c.lookParams(); p.yawTauS = 0; s.c.setLookParams(p);
   for (int i = 0; i < 100; ++i) s.step(0, 0, makeVec3(0, 0, -10));
   assert(near(s.c.yawDeg(), 10));
   assert(!s.c.startFineCapture('n', s.t));
-  out = s.still(50);
-  assert(out.fineEvent && !std::strcmp(out.fineEvent, "captured"));
+  LookTick out = s.still(50);
+  assert(out.fineEvent && !std::strcmp(out.fineEvent, "captured") && out.finePose == 'n');
   assert(near(s.c.yawDeg(), 0) && s.c.fineCalibration().pose(0).z == 0);
-  for (int i = 0; i < 100; ++i) s.step(0, 0, makeVec3(0, 0, -10));
-  assert(!s.c.startFineCapture('r', s.t));
-  out = s.still(50);
-  assert(out.fineEvent && s.c.fineCalibration().has(2));
-  assert(near(s.c.fineCalibration().pose(2).z, 10));
+  const char order[] = "lrdu";
+  const float roll[] = {0, 0, 0, 0}, pitch[] = {0, 0, 12, -12};
+  const float yawRate[] = {12, -12, 0, 0};  // deg/s for 1 s (right = -Z)
+  for (unsigned k = 0; k < 4; ++k) {
+    for (int i = 0; i < 100; ++i) s.step(roll[k], pitch[k], makeVec3(0, 0, yawRate[k]));
+    assert(!s.c.startFineCapture(order[k], s.t));
+    out = s.still(50, roll[k], pitch[k]);
+    assert(out.fineEvent && !std::strcmp(out.fineEvent, "captured"));
+    assert(!out.fineError && s.c.fineCalibration().on() == (k == 3));  // complete -> on
+    for (int i = 0; i < 100; ++i) s.step(0, 0, makeVec3(0, 0, -yawRate[k]));
+  }
+  assert(near(s.c.fineCalibration().pose(1).z, -12, 0.05f));
+  assert(near(s.c.fineCalibration().pose(2).z, 12, 0.05f));
   s.c.reportFault("test"); s.step();
   errorIs(s.c.startFineCapture('n', s.t), "fcal_fault");
 }
 
-void test_fcal_controller_mapping_gate_scale_source_and_mount() {
+void test_fcal_controller_rebase_direction_and_dead_band() {
   Sim s;
   s.c.setAlpha(0.01f);
   poses(&s.c.fineCalibration());
   assert(!s.c.enableFineCalibration());
-  MouseLookParams p = s.c.lookParams();
-  p.lmode = 1; p.kgx = p.kgy = 8; s.c.setLookParams(p);
-  s.c.setOtherInputsNeutral(false);
-  s.c.requestArm(); s.step(); s.still(305);
-  assert(s.c.state() == LOOK_WAIT_NEUTRAL);
-  s.c.setOtherInputsNeutral(true);
-  // Basic neutral is zero, but fine neutral roll=5,pitch=-2 (5 maps to -10).
-  assert(s.still(60).state == LOOK_WAIT_NEUTRAL);
-  assert(s.still(50, 5, -2).state == LOOK_ACTIVE);
-  LookTick out = s.step(5, -2, makeVec3(13, 0, 0));
-  assert(near(out.lookXErrDeg, 0, 0.01f));
-  assert(near(out.velocity.vxCps, 8*10*40.0f/30, 0.02f));
-  s.c.requestDisarm(); s.step(5, -2);
-  s.c.fineCalibration().off();
-  out = s.still(50, 5, -2);
-  assert(near(out.lookXErrDeg, 5, 0.01f) && near(out.lookYErrDeg, -2, 0.01f));
-  assert(!s.c.enableFineCalibration());
-  p = s.c.lookParams(); p.hsrc = 2;
-  assert(!s.c.setLookParams(p) && s.c.fineCalibration().on()); // valid yaw
-  p.hsrc = 1;
-  assert(s.c.setLookParams(p) && !s.c.fineCalibration().on());
-  assert(s.c.fineCalibration().has(4));
+  MouseLookParams p = s.c.lookParams(); p.yawTauS = 0; s.c.setLookParams(p);
+  // Basic calibration at a different pose: only the fine neutral moves.
+  s.c.requestArm();
+  LookTick out;
+  bool rebased = false;
+  for (int i = 0; i < 400 && s.c.state() != LOOK_ACTIVE; ++i) {
+    out = s.step(7, 3);
+    rebased |= out.fineEvent && !std::strcmp(out.fineEvent, "neutral");
+  }
+  assert(rebased && s.c.state() == LOOK_ACTIVE && s.c.fineCalibration().on());
+  assert(near(s.c.fineCalibration().pose(0).x, 7, 0.1f) && near(s.c.fineCalibration().pose(0).y, 3, 0.1f));
+  assert(near(s.c.fineCalibration().pose(2).z, 15));
+  // Right turn -> right, left turn -> left; dead band stays in degrees.
+  for (int i = 0; i < 50; ++i) out = s.step(7, 3, makeVec3(0, 0, -10));  // 5 deg right
+  assert(out.lookXErrDeg > 4 && out.lookXErrDeg < 6 && out.velocity.vxCps == 0);
+  for (int i = 0; i < 100; ++i) out = s.step(7, 3, makeVec3(0, 0, -10));  // 15 deg right
+  assert(out.lookXErrDeg > 14 && out.velocity.vxCps > 0);
+  for (int i = 0; i < 300; ++i) out = s.step(7, 3, makeVec3(0, 0, 10));   // 15 deg left
+  assert(out.lookXErrDeg < -14 && out.velocity.vxCps < 0);
+  assert(std::fabs(out.lookYErrDeg) < 2);
+  p = s.c.lookParams(); p.deadbandDeg[0] = 15; s.c.setLookParams(p);
+  for (int i = 0; i < 50; ++i) out = s.step(7, 3, makeVec3(0, 0, -10));  // back to 10 left
+  assert(out.lookXErrDeg < -9 && out.velocity.vxCps == 0);  // user dead band applies
   assert(s.c.setMount(AXIS_NEG_Y, AXIS_POS_Z));
   assert(!s.c.fineCalibration().has(0));
   out = s.step(); assert(!s.c.calibrated() && out.state == LOOK_DISARMED);
 }
 
+void test_edge_mount_yaw_and_rebase_event() {
+  // Board on its edge (body +Y up), mount left unchanged: head turns are
+  // rotations about body Y and must still drive the yaw source.
+  Sim s;
+  FusionParams f = defaultFusionParams(); f.mode = 1; f.armX = f.armZ = 0;
+  s.c.setFusionParams(f);
+  MouseLookParams p = s.c.lookParams(); p.hsrc = 2; p.yawTauS = 0;
+  s.c.setLookParams(p);
+  assert(s.c.fineCalibration().setNeutral(0, 0));
+  s.c.requestArm();
+  LookTick out;
+  bool rebased = false;
+  for (int i = 0; i < 400; ++i) {
+    out = s.step(90, 0);
+    rebased |= out.fineEvent && !std::strcmp(out.fineEvent, "neutral");
+  }
+  assert(rebased && s.c.state() == LOOK_ACTIVE);
+  assert(near(s.c.fineCalibration().pose(0).x, 90, 0.1f));
+  for (int i = 0; i < 100; ++i) out = s.step(90, 0, makeVec3(0, -10, 0));
+  assert(near(s.c.yawDeg(), 10, 0.1f) && out.velocity.vxCps > 0);
+  for (int i = 0; i < 200; ++i) out = s.step(90, 0, makeVec3(0, 10, 0));
+  assert(near(s.c.yawDeg(), -10, 0.1f) && out.velocity.vxCps < 0);
+}
+
 void test_fcal_capture_freshness_and_state_transition_cancel() {
   Sim s;
+  s.arm(); s.c.requestDisarm(); s.step();
   assert(!s.c.startFineCapture('n', s.t));
   s.still(25);
   for (int i = 0; i < 10; ++i) s.step(0, 0, kZero, false);
   assert(s.still(15).fineEvent);  // 40 fresh samples, no stale samples averaged
-  assert(s.c.fineCalibration().pose(0).x == 0);
+  assert(near(s.c.fineCalibration().pose(0).x, 0));
   assert(!s.c.startFineCapture('l', s.t));
   s.c.reportFault("test");
   LookTick out = s.step();
@@ -364,16 +415,14 @@ void test_fcal_capture_freshness_and_state_transition_cancel() {
   assert(!s.c.fineCalibration().capturing() && !s.c.fineCalibration().has(1));
 
   Sim waiting;
+  waiting.arm(); waiting.c.requestDisarm(); waiting.step();
   waiting.c.requestArm(); waiting.step(); waiting.still(305);
   assert(waiting.c.state() == LOOK_WAIT_NEUTRAL);
   assert(!waiting.c.startFineCapture('n', waiting.t));
   bool cancelled = false;
   for (int i = 0; i < 40; ++i) {
     out = waiting.step();
-    if (out.fineEvent) {
-      errorIs(out.fineEvent, "fcal_active");
-      cancelled = true;
-    }
+    if (out.fineEvent && !std::strcmp(out.fineEvent, "fcal_active")) cancelled = true;
   }
   assert(cancelled && !waiting.c.fineCalibration().has(0));
 }
@@ -383,7 +432,7 @@ void test_v080_sanitize_and_legacy_defaults() {
   assert(f.mode == 0 && f.armX == 0.10f && f.armZ == -0.05f && f.accelRejectG == 0.15f);
   MouseLookParams p = defaultMouseLookParams();
   assert(p.lmode == 0 && p.kgx == 8 && p.kgy == 8 && p.gyroDeadDps == 3);
-  LookController c; assert(!c.fineCalibration().on() && c.fineCalibration().autoSource());
+  LookController c; assert(!c.fineCalibration().on() && !c.fineCalibration().has(0));
   f.mode = 9; f.armX = -1; f.armZ = 1; f.accelRejectG = -1;
   sanitizeFusionParams(&f);
   assert(f.mode == 1 && f.armX == -0.3f && f.armZ == 0.3f && f.accelRejectG == 0.02f);
@@ -403,13 +452,14 @@ void run_v080_tests() {
   test_fuse1_euler_pitch_then_yaw_source();
   test_lmode_gyro_hybrid_clamp_invert_and_scale();
   test_lmode_selected_rates_and_only_active();
+  test_head_deviation_wrap_edge_and_rates();
   test_fcal_capture_window_average_and_motion();
-  test_fcal_validation_auto_ties_and_yaw_eligibility();
-  test_fcal_asymmetric_mapping_and_signed_gyro_scale();
-  test_fcal_val_round_trip_and_off_clear();
-  test_fcal_controller_capture_rejections_and_yaw_reference();
-  test_fcal_controller_mapping_gate_scale_source_and_mount();
+  test_fcal_axes_validation_and_projection();
+  test_fcal_profile_lines_and_neutral_rebase();
+  test_fcal_controller_capture_auto_enable_and_yaw_reference();
+  test_fcal_controller_rebase_direction_and_dead_band();
+  test_edge_mount_yaw_and_rebase_event();
   test_fcal_capture_freshness_and_state_transition_cancel();
   test_v080_sanitize_and_legacy_defaults();
-  std::puts("all v0.8.0 fusion, look-law and fine-calibration tests passed");
+  std::puts("all v0.8.x fusion, look-law and fine-calibration tests passed");
 }

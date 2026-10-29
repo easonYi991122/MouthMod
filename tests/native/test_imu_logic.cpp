@@ -316,7 +316,9 @@ void test_controller_full_arm_flow_and_mapping_sign() {
   LookTick k = s.runStill(200, 10, 8);
   assert(k.state == LOOK_ACTIVE);
   assert(k.velocity.vxCps > 0 && k.velocity.vyCps > 0);
-  assert(near(k.rollErrDeg, 10, 0.2f));
+  // D40 rotation-vector error: ~0.25 deg below the Euler difference when
+  // roll and pitch are combined (10 + 8 deg).
+  assert(near(k.rollErrDeg, 10, 0.3f));
   k = s.runStill(200, -10, -8);
   assert(k.velocity.vxCps < 0 && k.velocity.vyCps < 0);
   // Back to neutral stops the camera.
@@ -436,7 +438,7 @@ void test_look_sources_swap_and_same_source() {
   s.c.setLookParams(p);
   LookTick k = s.runStill(400, 10, -12);
   assert(near(k.lookXErrDeg, -12, 0.1f));
-  assert(near(k.lookYErrDeg, 10, 0.1f));
+  assert(near(k.lookYErrDeg, 10, 0.4f));  // D40: combined tilt, see above
   assert(k.velocity.vxCps > 0 && k.velocity.vyCps > 0);
   p.vsrc = 1; p.invertX = false;
   s.c.setLookParams(p);

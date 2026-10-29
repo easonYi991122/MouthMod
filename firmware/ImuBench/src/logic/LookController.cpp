@@ -20,7 +20,8 @@ const char* lookStateName(LookState s) {
 
 LookController::LookController()
     : fusion_(defaultFusionParams()),
-      sourceRates_(makeVec3(0, 0, 0)),
+      frame_(makeHeadFrame(makeVec3(0, 0, 1))),
+      headRates_(makeVec3(0, 0, 0)),
       state_(LOOK_DISARMED),
       armRequested_(false),
       disarmRequested_(false),
@@ -55,18 +56,6 @@ bool LookController::setMount(SignedAxis up, SignedAxis forward) {
   return true;
 }
 
-bool LookController::setLookParams(const MouseLookParams& p) {
-  const uint8_t oldH = mapper_.params().hsrc, oldV = mapper_.params().vsrc;
-  mapper_.setParams(p);
-  const MouseLookParams& next = mapper_.params();
-  if (fine_.on() && (oldH != next.hsrc || oldV != next.vsrc) &&
-      !fine_.validSources(calibrated_, next.hsrc, next.vsrc)) {
-    fine_.off();
-    return true;
-  }
-  return false;
-}
-
 void LookController::setFusionParams(const FusionParams& p) {
   if (fusion_.mode != p.mode) filter_.resetDerivative();
   fusion_ = p;
@@ -76,14 +65,11 @@ void LookController::setFusionParams(const FusionParams& p) {
 const char* LookController::startFineCapture(char pose, uint64_t nowUs) {
   if (state_ == LOOK_ACTIVE) return "fcal_active";
   if (state_ == LOOK_FAULT) return "fcal_fault";
-  return fine_.start(pose, nowUs);
+  return fine_.start(pose, nowUs, calibrated_);
 }
 
 const char* LookController::enableFineCalibration() {
-  MouseLookParams p = mapper_.params();
-  const char* error = fine_.enable(calibrated_, &p.hsrc, &p.vsrc);
-  if (!error) mapper_.setParams(p);
-  return error;
+  return fine_.enable();
 }
 
 void LookController::reportFault(const char* reason) {
@@ -115,18 +101,17 @@ void LookController::enter(LookState s, const char* event, LookTick* out) {
 void LookController::poseErrors(LookTick* out) const {
   out->rollDeg = filter_.rollDeg();
   out->pitchDeg = filter_.pitchDeg();
-  out->rollErrDeg = calibrated_ ? out->rollDeg - roll0_ : 0.0f;
-  out->pitchErrDeg = calibrated_ ? out->pitchDeg - pitch0_ : 0.0f;
-  const float errors[3] = {out->rollErrDeg, out->pitchErrDeg,
-                          calibrated_ ? yaw_ : 0.0f};
+  // D40: rotation since the basic-calibration neutral; no +-180 wrap.
+  const Vec3 d = calibrated_
+      ? headDeviation(frame_, upFromRollPitch(out->rollDeg, out->pitchDeg), yaw_)
+      : makeVec3(0.0f, 0.0f, 0.0f);
+  out->rollErrDeg = d.x;
+  out->pitchErrDeg = d.y;
+  const float errors[3] = {d.x, d.y, d.z};
   out->lookXErrDeg = errors[mapper_.params().hsrc];
   out->lookYErrDeg = errors[mapper_.params().vsrc];
-  if (fine_.on()) {
-    const MouseLookParams& p = mapper_.params();
-    const float angles[3] = {out->rollDeg, out->pitchDeg, yaw_};
-    out->lookXErrDeg = fine_.map(0, p.hsrc, angles[p.hsrc], p.saturationDeg);
-    out->lookYErrDeg = fine_.map(1, p.vsrc, angles[p.vsrc], p.saturationDeg);
-  }
+  // D39: fine calibration replaces the single source with the head's own axes.
+  if (fine_.on()) fine_.project(d, &out->lookXErrDeg, &out->lookYErrDeg);
 }
 
 LookTick LookController::tick(uint64_t nowUs, const ImuInput& imu,
@@ -136,6 +121,7 @@ LookTick LookController::tick(uint64_t nowUs, const ImuInput& imu,
   out.releaseAll = false;
   out.event = 0;
   out.fineEvent = 0;
+  out.fineError = 0;
   out.finePose = '-';
   out.velocity.vxCps = 0.0f;
   out.velocity.vyCps = 0.0f;
@@ -157,18 +143,19 @@ LookTick LookController::tick(uint64_t nowUs, const ImuInput& imu,
                          ? static_cast<float>(imu.sampleUs - lastSampleUs_) * 1e-6f
                          : 0.0f;
     if (dt > 0.0f) {
-      sourceRates_ = filter_.eulerRates(g);
       if (fusion_.mode == 1) {
         filter_.updateEnhanced(a, g, dt, fusion_.armX, fusion_.armZ,
                                fusion_.accelRejectG);
       } else {
-        sourceRates_.z = -g.z;  // v0.7.0 yaw source remains body -Z
         filter_.update(a, g, dt);
       }
-      // Body axes are forward/left/up: rightward head turn is negative Z.
+      // D40: yaw turns about the measured vertical, not about body Z, so a
+      // board mounted on its edge in front of the mouth still sees head turns.
+      headRates_ = headRates(
+          frame_, upFromRollPitch(filter_.rollDeg(), filter_.pitchDeg()), g);
       // Match the filter's gap guard; never integrate across a stale sample.
       if (dt <= ComplementaryFilter::kMaxDtS) {
-        const float rate = sourceRates_.z;
+        const float rate = headRates_.z;
         const float tau = mapper_.params().yawTauS;
         if (tau > 0.0f) {
           const float leak = -expm1f(-dt / tau);
@@ -184,8 +171,8 @@ LookTick LookController::tick(uint64_t nowUs, const ImuInput& imu,
       } else {
         filter_.seed(a);
       }
-      sourceRates_ = filter_.eulerRates(g);
-      if (fusion_.mode == 0) sourceRates_.z = -g.z;
+      headRates_ = headRates(
+          frame_, upFromRollPitch(filter_.rollDeg(), filter_.pitchDeg()), g);
     }
     lastAccelBody_ = a;
     lastGyroBody_ = g;
@@ -229,7 +216,8 @@ LookTick LookController::tick(uint64_t nowUs, const ImuInput& imu,
     calibrated_ = false;
     bias_ = makeVec3(0.0f, 0.0f, 0.0f);
     filter_.reset();
-    sourceRates_ = makeVec3(0, 0, 0);
+    frame_ = makeHeadFrame(makeVec3(0, 0, 1));
+    headRates_ = makeVec3(0, 0, 0);
     yaw_ = 0.0f;
     mountChanged_ = false;
   }
@@ -259,7 +247,13 @@ LookTick LookController::tick(uint64_t nowUs, const ImuInput& imu,
       yaw_ = 0.0f;
       filter_.seed(r.meanAccelG);
       filter_.resetDerivative();
-      sourceRates_ = makeVec3(0, 0, 0);
+      frame_ = makeHeadFrame(upFromRollPitch(roll0_, pitch0_));
+      headRates_ = makeVec3(0, 0, 0);
+      // D40: keep the fine-calibration axes, move only its neutral.
+      if (fine_.has(0) && fine_.setNeutral(roll0_, pitch0_)) {
+        out.fineEvent = "neutral";
+        out.finePose = 'n';
+      }
       enter(LOOK_WAIT_NEUTRAL, "cal_done", &out);
     } else if (cs != CAL_COLLECTING) {
       enter(LOOK_DISARMED, calibrationStatusName(cs), &out);
@@ -269,14 +263,14 @@ LookTick LookController::tick(uint64_t nowUs, const ImuInput& imu,
   if (fresh && fine_.capturing() && state_ != LOOK_ACTIVE && state_ != LOOK_FAULT) {
     out.finePose = fine_.capturePose();
     const int result = fine_.addSample(imu.sampleUs,
-        makeVec3(filter_.rollDeg(), filter_.pitchDeg(), yaw_), calibrated_);
+        upFromRollPitch(filter_.rollDeg(), filter_.pitchDeg()), yaw_);
     if (result != 0) {
       out.fineEvent = result > 0 ? "captured" : "fail_motion";
       // Keep the live yaw in the same N-relative frame as captured poses.
       // Required calibration/ACTIVE yaw resets also restore N.yaw == 0.
       if (result > 0 && out.finePose == 'n') yaw_ -= fine_.capturedNeutralYaw();
-      const MouseLookParams& p = mapper_.params();
-      if (fine_.on() && !fine_.validSources(calibrated_, p.hsrc, p.vsrc)) fine_.off();
+      // A complete pose set takes effect at once (and re-derives the axes).
+      if (result > 0 && fine_.complete()) out.fineError = fine_.enable();
     }
   }
 
@@ -307,11 +301,10 @@ LookTick LookController::tick(uint64_t nowUs, const ImuInput& imu,
     if (dtS > 0.1f) dtS = 0.1f;  // a stall must not count as a long hold
     lastMapUs_ = nowUs;
     const MouseLookParams& p = mapper_.params();
-    const float rates[3] = {sourceRates_.x, sourceRates_.y, sourceRates_.z};
-    const float sx = fine_.on() ? fine_.gyroScale(0, p.hsrc, p.saturationDeg) : 1;
-    const float sy = fine_.on() ? fine_.gyroScale(1, p.vsrc, p.saturationDeg) : 1;
-    out.velocity = mapper_.update(out.lookXErrDeg, out.lookYErrDeg, dtS,
-                                  rates[p.hsrc], rates[p.vsrc], sx, sy);
+    const float rates[3] = {headRates_.x, headRates_.y, headRates_.z};
+    float rx = rates[p.hsrc], ry = rates[p.vsrc];
+    if (fine_.on()) fine_.project(headRates_, &rx, &ry);
+    out.velocity = mapper_.update(out.lookXErrDeg, out.lookYErrDeg, dtS, rx, ry);
   }
   out.state = state_;
   return out;

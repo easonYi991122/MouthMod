@@ -123,15 +123,14 @@ void MouseLookMapper::reset() {
 }
 
 LookVelocity MouseLookMapper::update(float xErrDeg, float yErrDeg,
-                                    float dtS, float xRateDps, float yRateDps,
-                                    float xFineScale, float yFineScale) {
+                                    float dtS, float xRateDps, float yRateDps) {
   LookVelocity v;
   v.vxCps = x_.update(xErrDeg, params_.kxCpsPerDeg, params_, dtS, 0);
   v.vyCps = y_.update(yErrDeg, params_.kyCpsPerDeg, params_, dtS, 1);
   if (params_.lmode == 1) v.vxCps = v.vyCps = 0;
   if (params_.lmode != 0) {
     const float rates[2] = {xRateDps, yRateDps};
-    const float gains[2] = {params_.kgx*xFineScale, params_.kgy*yFineScale};
+    const float gains[2] = {params_.kgx, params_.kgy};
     float gyro[2] = {0, 0};
     for (unsigned i = 0; i < 2; ++i) {
       if (isfinite(rates[i]) && isfinite(gains[i])) {
