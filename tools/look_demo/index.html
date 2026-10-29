@@ -391,6 +391,7 @@ function handleLine(line) {
   if (rec) rec.push(line);
   if (line.startsWith('D,')) return handleData(line.split(','));
   if (line.startsWith('S,')) { S = line.split(','); return; }
+  if (line.startsWith('F,') || line.startsWith('#FC,')) return;
   const parts = line.split(',');
   switch (parts[0]) {
     case '#I': fw = parseKV(parts.slice(1)); log(line); break;

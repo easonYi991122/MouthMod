@@ -44,6 +44,9 @@ input[type=number], input[type=text] { width: 100%; font: inherit; padding: 2px 
 #log div { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #link, #front { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #hint { color: var(--warn); font-size: 12px; line-height: 16px; max-height: 48px; overflow: hidden; }
+.pose { border-top: 1px solid var(--line); margin-top: 6px; padding-top: 6px; }
+.pose .muted { margin-top: 3px; overflow-wrap: anywhere; }
+#fcalMessage { color: var(--warn); margin-top: 6px; }
 </style>
 </head>
 <body>
@@ -55,6 +58,7 @@ input[type=number], input[type=text] { width: 100%; font: inherit; padding: 2px 
   </div>
   <div id="link" class="muted">等待本地桥</div>
   <div id="front" class="muted" style="margin-top:4px">前台: ?</div>
+  <span id="fcalTag" class="muted">精细校准 —</span>
 
   <div class="box">
     <div class="muted">游戏实际收到</div>
@@ -80,7 +84,22 @@ input[type=number], input[type=text] { width: 100%; font: inherit; padding: 2px 
 </div>
 <button id="adjustToggle" aria-expanded="false" aria-controls="adjust">调整 ▸</button>
 <div id="adjust" hidden>
-  <details open><summary>视角</summary><div id="lookFields" class="fields"></div></details>
+  <details open><summary>视角</summary><div id="lookFields" class="fields"></div>
+    <div id="fusionLive" class="muted" hidden>加速度信任 w — · 线加速度 — g · 力臂加速度 — g</div>
+  </details>
+  <details id="fineCalibration"><summary>精细校准</summary>
+    <div class="muted" style="margin-top:6px">中立 → 左转 → 右转 → 低头 → 抬头；每次保持静止半秒。</div>
+    <div class="muted">提示: 先完成一次基础校准(启用)可让转头 yaw 也能用</div>
+    <div id="fcalStatus" class="muted" role="status">精细校准 — · 左右来源 — · 上下来源 —</div>
+    <div id="fcalPoses"></div>
+    <div id="fineFields" class="fields"></div>
+    <div class="row" style="margin-top:6px">
+      <button id="fcalOn" data-cmd="fcal on">启用精细校准</button>
+      <button id="fcalOff" data-cmd="fcal off">关闭</button>
+      <button id="fcalClear" data-cmd="fcal clear">清除</button>
+    </div>
+    <div id="fcalMessage" class="muted" role="status" aria-live="polite"></div>
+  </details>
   <details><summary>摇杆</summary><div id="joyFields" class="fields"></div><button data-cmd="jspan" style="margin-top:6px">测量行程</button></details>
   <details><summary>吹气/吸气</summary><div id="breathFields" class="fields"></div></details>
   <details><summary>配置</summary>
@@ -109,6 +128,8 @@ const STATE = {
 let D = null, S = null, P = {}, Q = {}, keys = '-', btn = '0', front = null, frontName = '?';
 let logLines = [], sumX = 0, sumY = 0, rateX = 0, rateY = 0, rateT = performance.now();
 let lastDraw = 0, faultWhy = '';
+let FC = null, fusion = null, capturePose = null, captureTimer = null;
+const poseFailures = new Set();
 // Why the board is latched in FAULT; the #E line scrolls out of the log fast.
 const FAULT_WHY = {
   fault_imu_timeout: 'IMU 无数据', fault_imu_init: 'IMU 初始化失败',
@@ -116,8 +137,13 @@ const FAULT_WHY = {
 };
 
 function kv(parts) { const o = {}; for (const p of parts) { const i = p.indexOf('='); if (i > 0) o[p.slice(0, i)] = p.slice(i + 1); } return o; }
-function send(cmd) { fetch('/cmd', { method: 'POST', body: cmd }).then((r) => { if (!r.ok) throw new Error(r.status); }).catch(() => log('发送失败: ' + cmd)); }
-function cmd(c) { send(c); if (c !== 'get') log('> ' + c); }
+function send(cmd) { return fetch('/cmd', { method: 'POST', body: cmd }).then((r) => { if (!r.ok) throw new Error(r.status); return true; }).catch(() => { log('发送失败: ' + cmd); return false; }); }
+function cmd(c) {
+  if (['fcal on', 'fcal off', 'fcal clear'].includes(c)) fcalMessage('');
+  if (c === 'fcal clear') { poseFailures.clear(); showFine(); }
+  if (c !== 'get') log('> ' + c);
+  return send(c);
+}
 function log(t) {
   logLines = logLines.concat(t).slice(-4);
   $('log').replaceChildren(...logLines.map((text) => { const row = document.createElement('div'); row.textContent = row.title = text; return row; }));
@@ -126,12 +152,19 @@ function log(t) {
 // A missing report stays visibly unknown; users can still choose a value.
 const SOURCES = [['0', '侧倾 roll'], ['1', '俯仰 pitch'], ['2', '转头 yaw·实验']];
 const FIELDS = [
+  ['look', 'fuse', '融合模式', [['0', '基本互补'], ['1', '加速度+角速度融合']]],
+  ['look', 'armx', '力臂前 armx (m)', 0.001], ['look', 'armz', '力臂上 armz (m)', 0.001],
+  ['look', 'arej', '加速度拒绝 arej (g)', 0.001],
+  ['look', 'lmode', '控制方式', [['0', '倾角'], ['1', '角速度'], ['2', '混合']]],
+  ['look', 'kgx', '左右角速度增益 kgx', 0.01], ['look', 'kgy', '上下角速度增益 kgy', 0.01],
+  ['look', 'gdead', '角速度死区 gdead (°/s)', 0.01],
   ['look', 'hsrc', '左右来源', SOURCES], ['look', 'vsrc', '上下来源', SOURCES],
   ['look', 'invx', '左右取反', 'check'], ['look', 'invy', '上下取反', 'check'],
   ['look', 'kx', '左右增益 kx', 0.01], ['look', 'ky', '上下增益 ky', 0.01],
   ['look', 'deadx', '左右起转角 °', 0.01], ['look', 'deady', '上下起转角 °', 0.01],
   ['look', 'confirm', '确认 confirm (ms)', 1], ['look', 'hyst', '迟滞 hyst (°)', 0.01],
   ['look', 'yawtau', '回零 yawtau (s)', 0.1],
+  ['fine', 'fauto', '自动选轴', 'check'],
   ['joy', 'jonx', '左右触发 jonx', 0.001], ['joy', 'jony', '前后触发 jony', 0.001],
   ['joy', 'joffx', '左右释放 joffx', 0.001], ['joy', 'joffy', '前后释放 joffy', 0.001],
   ['joy', 'jswap', '交换 XY', 'check'], ['joy', 'jinvx', '摇杆 X 取反', 'check'], ['joy', 'jinvy', '摇杆 Y 取反', 'check'],
@@ -148,6 +181,7 @@ const CHECK_WIRE = { bsign: ['-1', '1'] };
 const checkOut = (key, on) => (CHECK_WIRE[key] || ['1', '0'])[on ? 0 : 1];
 const checkIn = (key, v) => Number(v) === Number((CHECK_WIRE[key] || ['1'])[0]);
 const edited = new Set();
+const LIMITS = { armx: [-0.3, 0.3], armz: [-0.3, 0.3], arej: [0.02, 1], kgx: [0, 100], kgy: [0, 100], gdead: [0, 50] };
 for (const [group, key, label, kind] of FIELDS) {
   const row = document.createElement('label');
   row.className = 'field' + (kind === 'check' ? ' check' : '');
@@ -159,18 +193,20 @@ for (const [group, key, label, kind] of FIELDS) {
     el.value = '';
   } else if (kind === 'check') { el.type = 'checkbox'; el.indeterminate = true; }
   else { el.type = 'number'; el.step = String(kind); el.placeholder = '—'; }
+  if (key in LIMITS) { el.min = String(LIMITS[key][0]); el.max = String(LIMITS[key][1]); }
   const missing = document.createElement('span'); missing.className = 'unknown'; missing.id = 'missing_' + key; missing.textContent = '—';
   row.append(title, el, missing); $(group === 'joy' ? 'joyFields' : group + 'Fields').appendChild(row);
   el.onchange = () => {
     if (kind !== 'check' && (el.value === '' || !el.checkValidity() || !Number.isFinite(Number(el.value)))) return;
     edited.add(key); el.indeterminate = false;
+    if (key === 'fuse') { fusion = null; showFusion(el.value === '1'); }
     cmd(`set ${key} ${kind === 'check' ? checkOut(key, el.checked) : el.value}`);
   };
 }
 function syncFields(group) {
   const values = group === 'look' ? P : Q;
   for (const [section, key, , kind, reported = key] of FIELDS) {
-    if ((group === 'look') !== (section === 'look')) continue;
+    if ((group === 'look') !== (section === 'look' || section === 'fine')) continue;
     const el = $('p_' + key), known = reported in values;
     $('missing_' + key).textContent = known ? '' : '—';
     if (el.ownerDocument.activeElement === el) continue;
@@ -183,6 +219,90 @@ function syncFields(group) {
     }
   }
 }
+function showFusion(enabled = P.fuse === '1') {
+  $('fusionLive').hidden = !enabled;
+  $('fusionLive').textContent = fusion
+    ? `加速度信任 w ${fusion[0]} · 线加速度 ${fusion[1]} g · 力臂加速度 ${fusion[2]} g`
+    : '加速度信任 w — · 线加速度 — g · 力臂加速度 — g';
+}
+const POSES = [
+  ['n', '中立', '头回到舒适中立位，保持静止。'],
+  ['l', '左转', '做出希望向左看的姿势，保持静止。'],
+  ['r', '右转', '做出希望向右看的姿势，保持静止。'],
+  ['d', '低头', '做出希望向下看的姿势，保持静止。'],
+  ['u', '抬头', '做出希望向上看的姿势，保持静止。'],
+];
+const FC_ERRORS = {
+  fcal_bad_h: '左右姿势无效：请向中立两侧各转至少 3°，或开启自动选轴。',
+  fcal_bad_v: '上下姿势无效：请向中立两侧各转至少 3°，或开启自动选轴。',
+  fcal_incomplete: '姿势未齐，请完成五步记录。',
+  fcal_need_neutral: '请先记录中立姿势。',
+  fcal_active: '板子仍在启用，请先停用再记录。',
+  fcal_fault: '板子有故障，请先排除并确认故障。',
+};
+function fcalMessage(text) { $('fcalMessage').textContent = text; }
+function endCapture() { clearTimeout(captureTimer); captureTimer = null; capturePose = null; showFine(); }
+function showFine() {
+  const on = FC ? (FC.on === '1' ? '开' : '关') : '—';
+  const source = (v) => ({ 0: '侧倾 roll', 1: '俯仰 pitch', 2: '转头 yaw' })[v] || '—';
+  $('fcalTag').textContent = '精细校准 ' + on;
+  $('fcalStatus').textContent = `精细校准 ${on} · 左右来源 ${source(FC && FC.hsrc)} · 上下来源 ${source(FC && FC.vsrc)}`;
+  for (const [pose] of POSES) {
+    const values = FC && FC.poses[pose];
+    const saved = values ? `✓ roll ${values[0]}° / pitch ${values[1]}° / yaw ${values[2]}°` : '未记录';
+    $('fcal_' + pose + '_status').textContent = capturePose === pose ? '记录中，请保持静止…'
+      : poseFailures.has(pose) ? '动了，重来' + (values ? '（上次：' + saved + '）' : '') : saved;
+    $('fcal_' + pose).disabled = !!capturePose || (pose !== 'n' && !(FC && FC.poses.n));
+  }
+  for (const id of ['fcalOn', 'fcalOff', 'fcalClear']) $(id).disabled = !!capturePose;
+}
+async function captureFine(pose) {
+  if (capturePose) return;
+  capturePose = pose; poseFailures.delete(pose); showFine();
+  const active = D && D[3] === 'ACTIVE';
+  fcalMessage(active ? '已请求停用，随后记录；请保持静止半秒。' : '请保持当前姿势静止半秒。');
+  captureTimer = setTimeout(() => { endCapture(); fcalMessage('记录未确认，请刷新后重试。'); }, 4000);
+  // Await the bridge write so disarm reaches the serial port before capture.
+  if (active && !await cmd('disarm')) { endCapture(); fcalMessage('停用发送失败，请重试。'); return; }
+  if (capturePose !== pose) return;
+  if (!await cmd('fcal ' + pose)) { endCapture(); fcalMessage('记录发送失败，请重试。'); }
+}
+for (const [pose, label, instruction] of POSES) {
+  const row = document.createElement('div'); row.className = 'pose';
+  const header = document.createElement('div'); header.className = 'row';
+  const title = document.createElement('strong'); title.textContent = label;
+  const button = document.createElement('button'); button.id = 'fcal_' + pose; button.textContent = '记录';
+  button.setAttribute('aria-label', '记录' + label); button.onclick = () => captureFine(pose);
+  const hint = document.createElement('div'); hint.className = 'muted'; hint.textContent = instruction;
+  const status = document.createElement('div'); status.className = 'muted'; status.id = 'fcal_' + pose + '_status';
+  header.append(title, button); row.append(header, hint, status); $('fcalPoses').appendChild(row);
+}
+function handleFine(parts) {
+  if (parts[1].startsWith('on=')) {
+    const report = kv(parts.slice(1)), poses = {};
+    for (const [pose] of POSES) {
+      const value = report[pose];
+      if (!(report.have || '').includes(pose) || !value || value === '-') continue;
+      const angles = value.split('/');
+      if (angles.length === 3 && angles.every((v) => v.trim() !== '' && Number.isFinite(Number(v)))) poses[pose] = angles;
+    }
+    FC = { ...report, poses };
+  } else if (parts[1] === 'fail_motion') {
+    poseFailures.add(parts[2]); endCapture(); fcalMessage('动了，重来：保持静止半秒再记录。');
+  } else if (parts[1] === 'captured') {
+    poseFailures.delete(parts[2]); endCapture();
+    const next = POSES.find(([pose]) => pose !== parts[2] && !(FC && FC.poses[pose]));
+    fcalMessage(next ? `已记录，下一步：${next[1]}。` : '五步记录完成，可启用精细校准。');
+  } else if (parts[1] === 'off_invalid') {
+    if (FC) FC.on = '0';
+    fcalMessage('当前选轴不适合已记录姿势，精细校准已关闭。');
+  } else if (parts[1] === 'cleared_mount') {
+    FC = { on: '0', poses: {} }; poseFailures.clear(); endCapture();
+    fcalMessage('安装方向已改变，请重新记录五个姿势。');
+  }
+  showFine();
+}
+showFine();
 function setAdjust(open) {
   $('adjust').hidden = !open; $('adjustToggle').textContent = open ? '调整 ▾' : '调整 ▸';
   $('adjustToggle').setAttribute('aria-expanded', String(open));
@@ -216,6 +336,11 @@ async function saveProfile(clear) {
       }
       lines.push(`set ${key} ${kind === 'check' ? checkOut(key, el.checked) : el.value}`);
     }
+    if (!FC || capturePose) { profileStatus('默认配置：请先刷新并等待精细校准状态'); return; }
+    for (const [pose] of POSES) {
+      if (FC.poses[pose]) lines.push(`fcal val ${pose} ${FC.poses[pose].join(' ')}`);
+    }
+    if (FC.on === '1') lines.push('fcal on');
     lines.push('fgate ' + ($('chkGate').checked ? 1 : 0)); body = lines.join('\n');
   }
   try {
@@ -233,6 +358,13 @@ function handle(line) {
     return;
   }
   if (line.startsWith('S,')) { S = line.split(','); return; }
+  if (line.startsWith('F,')) {
+    const f = line.split(',');
+    if (f.length === 5 && f.slice(2).every((v) => v.trim() !== '' && Number.isFinite(Number(v)))) {
+      fusion = f.slice(2); showFusion();
+    }
+    return;
+  }
   const parts = line.split(',');
   switch (parts[0]) {
     case '#P':
@@ -240,19 +372,29 @@ function handle(line) {
       if ('hid' in P && $('chkHid').ownerDocument.activeElement !== $('chkHid')) $('chkHid').checked = P.hid === '1';
       if ('fgate' in P && (P.fgate === '1') !== $('chkGate').checked) send('fgate ' + ($('chkGate').checked ? 1 : 0));
       syncFields('look');
+      if (P.fuse !== '1') fusion = null;
+      showFusion();
       break;
+    case '#FC': if (parts.length > 1) handleFine(parts); break;
     case '#Q': Q = kv(parts.slice(1)); syncFields('channels'); break;
     case '#K': { const i = kv(parts.slice(2)); keys = i.keys || '-'; btn = i.left || '0'; break; }
     case '#F': log('前台门控: ' + (kv(parts.slice(2)).front === '1' ? '放行' : '拦截')); break;
     case '#E':
       if (parts[3] === 'FAULT' && parts[2] !== 'fault_ack') faultWhy = FAULT_WHY[parts[2]] || parts[2];
       log('事件 ' + parts.slice(2).join(' → ')); break;
-    case '#OK': case '#ERR': case '#C': log(line); break;
+    case '#ERR':
+      if (parts[1] in FC_ERRORS) { endCapture(); fcalMessage(FC_ERRORS[parts[1]]); log(FC_ERRORS[parts[1]]); }
+      else log(line);
+      break;
+    case '#OK': case '#C': log(line); break;
     case '#BRIDGE':
       if (parts[1] === 'front') { frontName = parts[2]; front = parts[3] === '1'; }
       else if (parts[1] === 'profile') { log('默认配置已回放 ' + parts[2] + ' 条'); send('get'); }
       else {
         $('link').textContent = '板子 ' + parts.slice(1, 3).join(' ');
+        if (parts[1] === 'connected' || parts[1] === 'disconnected') {
+          FC = null; fusion = null; poseFailures.clear(); endCapture(); showFusion(); fcalMessage('');
+        }
         if (parts[1] === 'connected') { send('get'); send('fgate ' + ($('chkGate').checked ? 1 : 0)); }
       }
       break;

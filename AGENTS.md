@@ -43,7 +43,7 @@ float_app:  # preferred UI (D32); browser + bridge is the backup
   extra_bridge_args_env: MOUTHMOD_BRIDGE_ARGS   # e.g. "--serial /dev/cu.usbmodem1101"
   note: bundles a copy of tools/look_demo; rebuild after changing bridge.py or the pages
   api: {GET: [/bridge-info, /events (SSE, one board line per event), /profile], POST: [/cmd (body = one command line), /profile (saved command lines; empty body clears)]}
-  profile: ~/.mouthmod/profile.txt (--profile PATH); replayed 1.5 s after every serial connect (D36)
+  profile: ~/.mouthmod/profile.txt (--profile PATH); replayed 1.5 s after every serial connect (D36); accepted prefixes set/chan/mount/fgate/hid/fcal
 pins:  # frozen by the spec; do not change
   A0: joystick X wiper
   A1: joystick Y wiper
@@ -126,7 +126,7 @@ user asks.
   by team decision; record any decision as a new row `D<n>` in
   `docs/imu-decisions.md` and update `docs/USAGE.md`.
 - Keep the serial protocol and the two pages (`tools/look_demo/index.html`,
-  `float.html`) in sync with `App.cpp` (`#P/#Q/#K/#E/#F/D/S` lines).
+  `float.html`) in sync with `App.cpp` (`#P/#Q/#K/#E/#F/#FC/D/S/F` lines).
 - Stop the bridge before uploading; only one program may hold the port.
 
 ## Known errors

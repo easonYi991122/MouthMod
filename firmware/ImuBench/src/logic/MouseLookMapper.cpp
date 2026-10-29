@@ -4,6 +4,9 @@
 
 MouseLookParams defaultMouseLookParams() {
   MouseLookParams p;
+  p.lmode = 0;
+  p.kgx = p.kgy = 8.0f;
+  p.gyroDeadDps = 3.0f;
   p.kxCpsPerDeg = 40.0f;
   p.kyCpsPerDeg = 30.0f;
   p.deadbandDeg[0] = p.deadbandDeg[1] = 6.0f;
@@ -36,6 +39,10 @@ bool clampField(float* v, float lo, float hi) {
 
 bool sanitizeMouseLookParams(MouseLookParams* p) {
   bool changed = false;
+  if (p->lmode > 2) { p->lmode = 2; changed = true; }
+  changed |= clampField(&p->kgx, 0.0f, 100.0f);
+  changed |= clampField(&p->kgy, 0.0f, 100.0f);
+  changed |= clampField(&p->gyroDeadDps, 0.0f, 50.0f);
   changed |= clampField(&p->kxCpsPerDeg, 0.0f, 500.0f);
   changed |= clampField(&p->kyCpsPerDeg, 0.0f, 500.0f);
   for (unsigned i = 0; i < 2; ++i)
@@ -116,10 +123,26 @@ void MouseLookMapper::reset() {
 }
 
 LookVelocity MouseLookMapper::update(float xErrDeg, float yErrDeg,
-                                    float dtS) {
+                                    float dtS, float xRateDps, float yRateDps,
+                                    float xFineScale, float yFineScale) {
   LookVelocity v;
   v.vxCps = x_.update(xErrDeg, params_.kxCpsPerDeg, params_, dtS, 0);
   v.vyCps = y_.update(yErrDeg, params_.kyCpsPerDeg, params_, dtS, 1);
+  if (params_.lmode == 1) v.vxCps = v.vyCps = 0;
+  if (params_.lmode != 0) {
+    const float rates[2] = {xRateDps, yRateDps};
+    const float gains[2] = {params_.kgx*xFineScale, params_.kgy*yFineScale};
+    float gyro[2] = {0, 0};
+    for (unsigned i = 0; i < 2; ++i) {
+      if (isfinite(rates[i]) && isfinite(gains[i])) {
+        const float mag = fmaxf(0, fabsf(rates[i]) - params_.gyroDeadDps);
+        const float term = gains[i] * (rates[i] < 0 ? -mag : mag);
+        gyro[i] = fmaxf(-4000.0f, fminf(4000.0f, term));
+      }
+    }
+    v.vxCps += gyro[0];
+    v.vyCps += gyro[1];
+  }
   if (params_.invertX) v.vxCps = -v.vxCps;
   if (params_.invertY) v.vyCps = -v.vyCps;
   v.engagedX = x_.engaged();

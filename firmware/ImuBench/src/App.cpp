@@ -49,6 +49,7 @@ Watchdog gWdt;
 uint32_t gResetReason = 0;
 int gJoyRaw[2] = {0, 0};
 uint64_t gNextSensorUs = 0;
+uint64_t gNextFusionUs = 0;
 
 // Bench-only action source (serial "act"/"tap"), OR-ed with the channels.
 GameIntent gBench = noGameIntent();
@@ -85,7 +86,7 @@ const char* gLineEvent = 0;
 uint32_t gLogDropped = 0;
 uint32_t gImuReadErrors = 0;
 
-char gCmd[80];
+char gCmd[160];
 uint8_t gCmdLen = 0;
 
 uint64_t nowUs() { return gClock.update(micros()); }
@@ -103,7 +104,7 @@ void emit(const char* line) {
 
 void emitf(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
 void emitf(const char* fmt, ...) {
-  char buf[768];  // extended #Q includes all v0.7.0 channel parameters
+  char buf[768];  // bounded #P/#Q/#FC protocol lines
   va_list ap;
   va_start(ap, fmt);
   vsnprintf(buf, sizeof(buf), fmt, ap);
@@ -153,9 +154,12 @@ void printChannels() {
 
 void printParams() {
   const MouseLookParams& p = gLook.lookParams();
+  const FusionParams& f = gLook.fusionParams();
   emitf("#P,kx=%.2f,ky=%.2f,dead=%.2f,hyst=%.2f,sat=%.2f,hmode=%u,vmode=%u,"
         "confirm=%.0f,invx=%u,invy=%u,alpha=%.4f,mount=%s%s,hid=%u,rate=%u,"
-        "fgate=%u,hsrc=%u,vsrc=%u,yawtau=%.1f,deadx=%.2f,deady=%.2f\n",
+        "fgate=%u,hsrc=%u,vsrc=%u,yawtau=%.1f,deadx=%.2f,deady=%.2f,"
+        "fuse=%u,armx=%.3f,armz=%.3f,arej=%.3f,"
+        "lmode=%u,kgx=%.2f,kgy=%.2f,gdead=%.2f,fauto=%u\n",
         p.kxCpsPerDeg, p.kyCpsPerDeg, p.deadbandDeg[0], p.hysteresisDeg,
         p.saturationDeg, p.hystMode, p.velMode, p.engageConfirmS * 1e3f,
         p.invertX ? 1U : 0U,
@@ -163,7 +167,70 @@ void printParams() {
         signedAxisName(gLook.mount().forward()), gHidEnabled ? 1U : 0U,
         gTelemetryHz, gFocusGate ? 1U : 0U,
         static_cast<unsigned>(p.hsrc), static_cast<unsigned>(p.vsrc),
-        p.yawTauS, p.deadbandDeg[0], p.deadbandDeg[1]);
+        p.yawTauS, p.deadbandDeg[0], p.deadbandDeg[1],
+        static_cast<unsigned>(f.mode), f.armX, f.armZ, f.accelRejectG,
+        static_cast<unsigned>(p.lmode), p.kgx, p.kgy, p.gyroDeadDps,
+        gLook.fineCalibration().autoSource() ? 1U : 0U);
+}
+
+void printFineCalibration() {
+  const FineCalibration& f = gLook.fineCalibration();
+  const MouseLookParams& p = gLook.lookParams();
+  const char* letters = "nlrdu";
+  char have[6] = "";
+  char poses[5][144];
+  unsigned n = 0;
+  for (unsigned i = 0; i < 5; ++i) {
+    if (f.has(i)) {
+      have[n++] = letters[i];
+      const Vec3 a = f.pose(i);
+      snprintf(poses[i], sizeof(poses[i]), "%.2f/%.2f/%.2f", a.x, a.y, a.z);
+    } else {
+      strcpy(poses[i], "-");
+    }
+  }
+  have[n] = '\0';
+  emitf("#FC,on=%u,have=%s,hsrc=%u,vsrc=%u,n=%s,l=%s,r=%s,d=%s,u=%s\n",
+        f.on() ? 1U : 0U, have, static_cast<unsigned>(p.hsrc),
+        static_cast<unsigned>(p.vsrc), poses[0], poses[1], poses[2],
+        poses[3], poses[4]);
+}
+
+void handleFineCalibration(int argc, char** argv) {
+  FineCalibration& f = gLook.fineCalibration();
+  const char* error = 0;
+  if (argc == 1) {
+    // Report only.
+  } else if (argc == 2 && !strcmp(argv[1], "on")) {
+    error = gLook.enableFineCalibration();
+    if (!error && f.autoSource()) printParams();
+  } else if (argc == 2 && !strcmp(argv[1], "off")) {
+    f.off();
+    f.cancel();
+  } else if (argc == 2 && !strcmp(argv[1], "clear")) {
+    f.clear();
+  } else if (argc == 2 && strlen(argv[1]) == 1 &&
+             FineCalibration::poseIndex(argv[1][0]) >= 0) {
+    error = gLook.startFineCapture(argv[1][0], nowUs());
+  } else if (argc == 6 && !strcmp(argv[1], "val") && strlen(argv[2]) == 1 &&
+             FineCalibration::poseIndex(argv[2][0]) >= 0) {
+    float a[3];
+    for (unsigned i = 0; i < 3; ++i) {
+      char* end = 0;
+      a[i] = strtof(argv[i + 3], &end);
+      if (end == argv[i + 3] || *end || !isfinite(a[i])) error = "fcal_value";
+    }
+    if (!error) {
+      f.cancel();
+      f.setPose(argv[2][0], makeVec3(a[0], a[1], a[2]));
+      const MouseLookParams& p = gLook.lookParams();
+      if (f.on() && !f.validSources(gLook.calibrated(), p.hsrc, p.vsrc)) f.off();
+    }
+  } else {
+    error = "fcal_command";
+  }
+  if (error) emitf("#ERR,%s\n", error);
+  printFineCalibration();
 }
 
 void printIdentity() {
@@ -238,8 +305,28 @@ bool setParam(const char* name, const char* value) {
   const float v = strtof(value, &end);
   if (end == value || !isfinite(v)) return false;
   if (setChannelParam(name, v)) return true;
+  FusionParams fusion = gLook.fusionParams();
+  bool fusionParam = true;
+  if (!strcmp(name, "fuse"))
+    fusion.mode = static_cast<uint8_t>(v < 0 ? 0 : (v > 1 ? 1 : v));
+  else if (!strcmp(name, "armx")) fusion.armX = v;
+  else if (!strcmp(name, "armz")) fusion.armZ = v;
+  else if (!strcmp(name, "arej")) fusion.accelRejectG = v;
+  else if (!strcmp(name, "fauto")) {
+    gLook.fineCalibration().setAutoSource(v != 0);
+    return true;
+  } else fusionParam = false;
+  if (fusionParam) {
+    gLook.setFusionParams(fusion);
+    return true;
+  }
   MouseLookParams p = gLook.lookParams();
-  if (!strcmp(name, "kx")) p.kxCpsPerDeg = v;
+  if (!strcmp(name, "lmode"))
+    p.lmode = static_cast<uint8_t>(v < 0 ? 0 : (v > 2 ? 2 : v));
+  else if (!strcmp(name, "kgx")) p.kgx = v;
+  else if (!strcmp(name, "kgy")) p.kgy = v;
+  else if (!strcmp(name, "gdead")) p.gyroDeadDps = v;
+  else if (!strcmp(name, "kx")) p.kxCpsPerDeg = v;
   else if (!strcmp(name, "ky")) p.kyCpsPerDeg = v;
   else if (!strcmp(name, "dead")) p.deadbandDeg[0] = p.deadbandDeg[1] = v;
   else if (!strcmp(name, "deadx")) p.deadbandDeg[0] = v;
@@ -265,7 +352,7 @@ bool setParam(const char* name, const char* value) {
   } else {
     return false;
   }
-  gLook.setLookParams(p);
+  if (gLook.setLookParams(p)) emit("#FC,off_invalid\n");
   return true;
 }
 
@@ -408,9 +495,9 @@ void startSpanCapture() {
 }
 
 void handleCommand(char* line) {
-  char* argv[4] = {0, 0, 0, 0};
+  char* argv[8] = {0};
   int argc = 0;
-  for (char* tok = strtok(line, " \t\r"); tok && argc < 4;
+  for (char* tok = strtok(line, " \t\r"); tok && argc < 8;
        tok = strtok(0, " \t\r")) {
     argv[argc++] = tok;
   }
@@ -472,6 +559,8 @@ void handleCommand(char* line) {
     }
   } else if (!strcmp(c, "turn") && argc >= 2) {
     startTurn(argc, argv);
+  } else if (!strcmp(c, "fcal")) {
+    handleFineCalibration(argc, argv);
   } else if (!strcmp(c, "set") && argc == 3) {
     if (setParam(argv[1], argv[2])) {
       printParams();
@@ -482,6 +571,7 @@ void handleCommand(char* line) {
     SignedAxis up, fwd;
     if (parseSignedAxis(argv[1], &up) && parseSignedAxis(argv[2], &fwd) &&
         gLook.setMount(up, fwd)) {
+      emit("#FC,cleared_mount\n");
       printParams();
     } else {
       emit("#ERR,mount needs two perpendicular axes, e.g. mount +Z +X\n");
@@ -491,6 +581,7 @@ void handleCommand(char* line) {
     printParams();
     printChannels();
     printCalibration();
+    printFineCalibration();
     printHeader();
   } else {
     emitf("#ERR,unknown %s\n", c);
@@ -703,6 +794,11 @@ void controlTick(uint64_t t) {
       printChannels();
     }
   }
+  if (k.fineEvent) {
+    if (!strncmp(k.fineEvent, "fcal_", 5)) emitf("#ERR,%s\n", k.fineEvent);
+    else emitf("#FC,%s,%c\n", k.fineEvent, k.finePose);
+    printFineCalibration();
+  }
   if (k.releaseAll) {
     gGame.releaseAll();
     clearBenchActions();
@@ -800,6 +896,12 @@ void controlTick(uint64_t t) {
   // 7. Log.
   writeTelemetry(t, k);
   writeSensorLine(t);
+  if (gLook.fusionParams().mode == 1 && t >= gNextFusionUs) {
+    gNextFusionUs = t + 100000U;
+    emitf("F,%lu,%.2f,%.3f,%.3f\n", static_cast<unsigned long>(t / 1000U),
+          gLook.filter().accelTrust(), gLook.filter().linearG(),
+          gLook.filter().rotationalG());
+  }
 }
 
 }  // namespace
@@ -819,7 +921,17 @@ void appSetup() {
   timing.imuTimeoutUs = cfg::kImuTimeoutUs;
   gLook.setTiming(timing);
   gLook.setAlpha(cfg::kAlpha);
+  FusionParams fusion = defaultFusionParams();
+  fusion.mode = cfg::kFusionMode;
+  fusion.armX = cfg::kArmXMetres;
+  fusion.armZ = cfg::kArmZMetres;
+  fusion.accelRejectG = cfg::kAccelRejectG;
+  gLook.setFusionParams(fusion);
+  gLook.fineCalibration().setAutoSource(cfg::kFineAutoSource);
   MouseLookParams p = defaultMouseLookParams();
+  p.lmode = cfg::kLookMode;
+  p.kgx = cfg::kGyroGainX; p.kgy = cfg::kGyroGainY;
+  p.gyroDeadDps = cfg::kGyroDeadDps;
   p.kxCpsPerDeg = cfg::kKxCpsPerDeg;
   p.kyCpsPerDeg = cfg::kKyCpsPerDeg;
   p.deadbandDeg[0] = cfg::kDeadbandXDeg;

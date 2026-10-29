@@ -19,7 +19,9 @@ const char* lookStateName(LookState s) {
 }
 
 LookController::LookController()
-    : state_(LOOK_DISARMED),
+    : fusion_(defaultFusionParams()),
+      sourceRates_(makeVec3(0, 0, 0)),
+      state_(LOOK_DISARMED),
       armRequested_(false),
       disarmRequested_(false),
       ackRequested_(false),
@@ -48,8 +50,40 @@ bool LookController::setMount(SignedAxis up, SignedAxis forward) {
   if (!mount_.configure(up, forward)) {
     return false;
   }
+  fine_.clear();
   mountChanged_ = true;
   return true;
+}
+
+bool LookController::setLookParams(const MouseLookParams& p) {
+  const uint8_t oldH = mapper_.params().hsrc, oldV = mapper_.params().vsrc;
+  mapper_.setParams(p);
+  const MouseLookParams& next = mapper_.params();
+  if (fine_.on() && (oldH != next.hsrc || oldV != next.vsrc) &&
+      !fine_.validSources(calibrated_, next.hsrc, next.vsrc)) {
+    fine_.off();
+    return true;
+  }
+  return false;
+}
+
+void LookController::setFusionParams(const FusionParams& p) {
+  if (fusion_.mode != p.mode) filter_.resetDerivative();
+  fusion_ = p;
+  sanitizeFusionParams(&fusion_);
+}
+
+const char* LookController::startFineCapture(char pose, uint64_t nowUs) {
+  if (state_ == LOOK_ACTIVE) return "fcal_active";
+  if (state_ == LOOK_FAULT) return "fcal_fault";
+  return fine_.start(pose, nowUs);
+}
+
+const char* LookController::enableFineCalibration() {
+  MouseLookParams p = mapper_.params();
+  const char* error = fine_.enable(calibrated_, &p.hsrc, &p.vsrc);
+  if (!error) mapper_.setParams(p);
+  return error;
 }
 
 void LookController::reportFault(const char* reason) {
@@ -65,6 +99,11 @@ void LookController::enter(LookState s, const char* event, LookTick* out) {
     if (wasActive || s == LOOK_FAULT || s == LOOK_CALIBRATING) {
       out->releaseAll = true;
     }
+  }
+  if ((s == LOOK_ACTIVE || s == LOOK_FAULT) && fine_.capturing()) {
+    out->finePose = fine_.capturePose();
+    out->fineEvent = s == LOOK_ACTIVE ? "fcal_active" : "fcal_fault";
+    fine_.cancel();
   }
   if (s == LOOK_CALIBRATING || s == LOOK_ACTIVE) yaw_ = 0.0f;
   if (s == LOOK_CALIBRATING) {
@@ -82,6 +121,12 @@ void LookController::poseErrors(LookTick* out) const {
                           calibrated_ ? yaw_ : 0.0f};
   out->lookXErrDeg = errors[mapper_.params().hsrc];
   out->lookYErrDeg = errors[mapper_.params().vsrc];
+  if (fine_.on()) {
+    const MouseLookParams& p = mapper_.params();
+    const float angles[3] = {out->rollDeg, out->pitchDeg, yaw_};
+    out->lookXErrDeg = fine_.map(0, p.hsrc, angles[p.hsrc], p.saturationDeg);
+    out->lookYErrDeg = fine_.map(1, p.vsrc, angles[p.vsrc], p.saturationDeg);
+  }
 }
 
 LookTick LookController::tick(uint64_t nowUs, const ImuInput& imu,
@@ -90,6 +135,8 @@ LookTick LookController::tick(uint64_t nowUs, const ImuInput& imu,
   out.state = state_;
   out.releaseAll = false;
   out.event = 0;
+  out.fineEvent = 0;
+  out.finePose = '-';
   out.velocity.vxCps = 0.0f;
   out.velocity.vyCps = 0.0f;
   out.velocity.engagedX = false;
@@ -102,18 +149,26 @@ LookTick LookController::tick(uint64_t nowUs, const ImuInput& imu,
 
   // 1. Sensor update (always, so telemetry shows the pose while disarmed).
   bool fresh = false;
-  if (imu.fresh && vecFinite(imu.accelG) && vecFinite(imu.gyroDps)) {
+  if (imu.fresh && (!hasSample_ || imu.sampleUs > lastSampleUs_) &&
+      vecFinite(imu.accelG) && vecFinite(imu.gyroDps)) {
     const Vec3 a = mount_.toBody(imu.accelG);
     const Vec3 g = vecSub(mount_.toBody(imu.gyroDps), bias_);
     const float dt = hasSample_ && imu.sampleUs > lastSampleUs_
                          ? static_cast<float>(imu.sampleUs - lastSampleUs_) * 1e-6f
                          : 0.0f;
     if (dt > 0.0f) {
-      filter_.update(a, g, dt);
+      sourceRates_ = filter_.eulerRates(g);
+      if (fusion_.mode == 1) {
+        filter_.updateEnhanced(a, g, dt, fusion_.armX, fusion_.armZ,
+                               fusion_.accelRejectG);
+      } else {
+        sourceRates_.z = -g.z;  // v0.7.0 yaw source remains body -Z
+        filter_.update(a, g, dt);
+      }
       // Body axes are forward/left/up: rightward head turn is negative Z.
       // Match the filter's gap guard; never integrate across a stale sample.
       if (dt <= ComplementaryFilter::kMaxDtS) {
-        const float rate = -g.z;
+        const float rate = sourceRates_.z;
         const float tau = mapper_.params().yawTauS;
         if (tau > 0.0f) {
           const float leak = -expm1f(-dt / tau);
@@ -123,7 +178,14 @@ LookTick LookController::tick(uint64_t nowUs, const ImuInput& imu,
         }
       }
     } else {
-      filter_.seed(a);
+      if (fusion_.mode == 1) {
+        filter_.updateEnhanced(a, g, ComplementaryFilter::kNominalDtS,
+                               fusion_.armX, fusion_.armZ, fusion_.accelRejectG);
+      } else {
+        filter_.seed(a);
+      }
+      sourceRates_ = filter_.eulerRates(g);
+      if (fusion_.mode == 0) sourceRates_.z = -g.z;
     }
     lastAccelBody_ = a;
     lastGyroBody_ = g;
@@ -167,6 +229,7 @@ LookTick LookController::tick(uint64_t nowUs, const ImuInput& imu,
     calibrated_ = false;
     bias_ = makeVec3(0.0f, 0.0f, 0.0f);
     filter_.reset();
+    sourceRates_ = makeVec3(0, 0, 0);
     yaw_ = 0.0f;
     mountChanged_ = false;
   }
@@ -195,9 +258,25 @@ LookTick LookController::tick(uint64_t nowUs, const ImuInput& imu,
       calibrated_ = true;
       yaw_ = 0.0f;
       filter_.seed(r.meanAccelG);
+      filter_.resetDerivative();
+      sourceRates_ = makeVec3(0, 0, 0);
       enter(LOOK_WAIT_NEUTRAL, "cal_done", &out);
     } else if (cs != CAL_COLLECTING) {
       enter(LOOK_DISARMED, calibrationStatusName(cs), &out);
+    }
+  }
+
+  if (fresh && fine_.capturing() && state_ != LOOK_ACTIVE && state_ != LOOK_FAULT) {
+    out.finePose = fine_.capturePose();
+    const int result = fine_.addSample(imu.sampleUs,
+        makeVec3(filter_.rollDeg(), filter_.pitchDeg(), yaw_), calibrated_);
+    if (result != 0) {
+      out.fineEvent = result > 0 ? "captured" : "fail_motion";
+      // Keep the live yaw in the same N-relative frame as captured poses.
+      // Required calibration/ACTIVE yaw resets also restore N.yaw == 0.
+      if (result > 0 && out.finePose == 'n') yaw_ -= fine_.capturedNeutralYaw();
+      const MouseLookParams& p = mapper_.params();
+      if (fine_.on() && !fine_.validSources(calibrated_, p.hsrc, p.vsrc)) fine_.off();
     }
   }
 
@@ -227,7 +306,12 @@ LookTick LookController::tick(uint64_t nowUs, const ImuInput& imu,
     float dtS = static_cast<float>(nowUs - lastMapUs_) * 1e-6f;
     if (dtS > 0.1f) dtS = 0.1f;  // a stall must not count as a long hold
     lastMapUs_ = nowUs;
-    out.velocity = mapper_.update(out.lookXErrDeg, out.lookYErrDeg, dtS);
+    const MouseLookParams& p = mapper_.params();
+    const float rates[3] = {sourceRates_.x, sourceRates_.y, sourceRates_.z};
+    const float sx = fine_.on() ? fine_.gyroScale(0, p.hsrc, p.saturationDeg) : 1;
+    const float sy = fine_.on() ? fine_.gyroScale(1, p.vsrc, p.saturationDeg) : 1;
+    out.velocity = mapper_.update(out.lookXErrDeg, out.lookYErrDeg, dtS,
+                                  rates[p.hsrc], rates[p.vsrc], sx, sy);
   }
   out.state = state_;
   return out;

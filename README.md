@@ -13,6 +13,7 @@ MouthMod/
     src/hardware/ImuReader.*    板载 LSM6DS3TR-C（内部 Wire1, 0x6A），轮询 + 每次 I2C 都检查
     src/hardware/HidOutput.*    TinyUSB 键盘+鼠标复合 HID，release-all 优先
     src/logic/                  纯逻辑：安装方向、互补滤波、静止校准、视角映射、状态机
+    src/logic/FineCalibration.* 五点精细校准（中立、左、右、低、抬头，D39）
     src/logic/GameInput.*       Minecraft Education 适配：各通道电平 → 完整键盘状态 + 鼠标报告
     src/logic/JoystickMapper.*  摇杆 → W/A/S/D（移植自组员代码，按规格归一化与迟滞）
     src/logic/PressureChannel.* HX710B 压力 → 吹/吸/咬（移植自组员代码，带符号、基线跟踪）
@@ -29,6 +30,7 @@ MouthMod/
   tools/macos/platform.local.txt  macOS 编译修复（见下）
   docs/imu-decisions.md         规格没写死、本工程暂定的实现选择
   docs/minecraft-education.md   为什么保持键鼠、按键映射、合并接口、今晚实机测试步骤
+  docs/imu-fusion-survey.md     六轴融合、头鼠、力臂补偿的开源方案调研（v0.8.0）
 ```
 
 ## 要不要现在装 Minecraft？
@@ -118,6 +120,8 @@ python3 tools/look_demo/bridge.py   # 在仓库根目录运行
 | `chan <joy\|breath\|bite> <0\|1>` | 打开或关闭某个通道（默认摇杆、吹吸打开，咬合关闭）。没接的传感器要先关掉；切换后会停用 |
 | `set <hsrc\|vsrc\|deadx\|deady\|yawtau> <v>` | v0.7.0：视角左右/上下来源（0 roll、1 pitch、2 yaw）、分轴起转角、yaw 回零时间（D33）；`D` 行第 14/15 列改为映射后的左右/上下误差（`look_x_err,look_y_err`） |
 | `set <jonx\|jony\|joffx\|joffy\|pmode\|prep\|sjump\|sdis> <v>` | v0.7.0：摇杆分轴阈值、吹气模式和连点间隔、吸气跳跃、吸气停用时长（D33–D35）；桥的 `GET/POST /profile` 读写保存的参数（D36） |
+| `set <fuse\|armx\|armz\|arej\|lmode\|kgx\|kgy\|gdead\|fauto> <v>` | v0.8.0：融合模式与力臂、加速度拒绝；控制方式（倾角 / 角速度 / 混合）与角速度增益、死区；精细校准自动选轴（D37–D39） |
+| `fcal [n\|l\|r\|d\|u\|on\|off\|clear]` / `fcal val <pose> <roll> <pitch> <yaw>` | v0.8.0：五点精细校准；回 `#FC,on=..,have=..,hsrc=..,vsrc=..,n=r/p/y,...`（D39） |
 | `fgate 0\|1` / `focus 0\|1` | 前台门控开关 / 由桥周期发送的「Minecraft 在前台」心跳（见 D28） |
 | `hang` | 仅在看门狗开启时可用：让主循环卡死，用来测试看门狗复位（复位后应为 DISARMED，`#I` 里 `reset=watchdog`） |
 | `jspan` | 仅 DISARMED 时可用：先保持松杆，再在 6 s 内把四个方向各推到舒适的极限，记录每人的摇杆行程 |
@@ -126,6 +130,8 @@ python3 tools/look_demo/bridge.py   # 在仓库根目录运行
 | `turn <counts> [cps]` | 仅 ACTIVE 时可用：以给定速率发出正好这么多的鼠标 X 计数（期间头部视角暂停），用来测游戏里的度/计数和鼠标线性 |
 
 板子输出的行：`#I` 身份/元数据，`#P` 参数，`#Q` 摇杆/压力通道参数，`S,` 通道数据（20 Hz，列名见 `#HS`），`#C` 校准结果，`#E` 事件，`#K` 主机实际收到的按键/右键状态（变化时才输出），`#F` 前台门控变化，`#OK/#ERR` 命令回执，`D,` 数据行。
+`fuse 1` 时另有 10 Hz 的 `F,<t_ms>,<w>,<lin_g>,<rot_g>` 行：加速度信任、线加速度、力臂加速度（D37）。
+
 `D` 行各列：`t_ms, loop_dt_us, state, imu_new, imu_age_ms, ax_g, ay_g, az_g, gx_dps, gy_dps, gz_dps, roll_deg, pitch_deg, look_x_err, look_y_err, vx_cps, vy_cps, dx, dy, hid, engaged, log_dropped, event`。`look_x_err, look_y_err` 是按 `hsrc/vsrc` 选好来源后的左右、上下误差（v0.7.0 之前叫 `roll_err, pitch_err`，默认设置下数值相同）。
 其中加速度和陀螺是头部坐标系下的值（x 前、y 左、z 上），陀螺已去零偏；`dx/dy` 是相邻两行之间实际提交的计数之和；`engaged` 是两位数字，分别表示 X 轴和 Y 轴是否越过死区。
 发送是有界的：缓冲区不够时丢弃这一行并计入 `log_dropped`，不会阻塞主循环。

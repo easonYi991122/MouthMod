@@ -10,7 +10,15 @@
 #ifndef MOUTHMOD_COMPLEMENTARY_FILTER_H
 #define MOUTHMOD_COMPLEMENTARY_FILTER_H
 
+#include <stdint.h>
 #include "Vec3.h"
+
+struct FusionParams {
+  uint8_t mode;
+  float armX, armZ, accelRejectG;
+};
+FusionParams defaultFusionParams();
+void sanitizeFusionParams(FusionParams* p);
 
 class ComplementaryFilter {
  public:
@@ -32,6 +40,15 @@ class ComplementaryFilter {
   // or non-positive dt. A gap > kMaxDtS re-seeds from the accelerometer.
   bool update(const Vec3& accelG, const Vec3& gyroDps, float dtS);
 
+  // D37 enhanced path; update() above remains the v0.7.0 implementation.
+  bool updateEnhanced(const Vec3& accelG, const Vec3& gyroDps, float dtS,
+                      float armX, float armZ, float accelRejectG);
+  Vec3 eulerRates(const Vec3& gyroDps) const;  // roll, pitch, right-positive yaw
+  float accelTrust() const { return accelTrust_; }
+  float linearG() const { return linearG_; }
+  float rotationalG() const { return rotationalG_; }
+  void resetDerivative() { haveOmega_ = false; }
+
   bool initialized() const { return initialized_; }
   float rollDeg() const { return rollDeg_; }
   float pitchDeg() const { return pitchDeg_; }
@@ -41,6 +58,12 @@ class ComplementaryFilter {
   static float accelPitchDeg(const Vec3& a);
 
  private:
+  bool haveOmega_;
+  Vec3 omega_;
+  Vec3 omegaDot_;
+  float accelTrust_;
+  float linearG_;
+  float rotationalG_;
   float alpha_;
   float tauS_;
   bool initialized_;

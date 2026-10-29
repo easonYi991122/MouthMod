@@ -22,6 +22,9 @@ ComplementaryFilter::ComplementaryFilter() : alpha_(0.98f), tauS_(0.0f) {
 }
 
 void ComplementaryFilter::reset() {
+  haveOmega_ = false;
+  omega_ = omegaDot_ = makeVec3(0, 0, 0);
+  accelTrust_ = linearG_ = rotationalG_ = 0.0f;
   initialized_ = false;
   lastUsedAccel_ = false;
   rollDeg_ = 0.0f;
@@ -88,4 +91,81 @@ bool ComplementaryFilter::update(const Vec3& accelG, const Vec3& gyroDps,
   rollDeg_ = wrapDeg(roll);
   pitchDeg_ = pitch;
   return true;
+}
+
+namespace {
+Vec3 cross(const Vec3& a, const Vec3& b) {
+  return makeVec3(a.y*b.z - a.z*b.y, a.z*b.x - a.x*b.z,
+                  a.x*b.y - a.y*b.x);
+}
+}  // namespace
+
+Vec3 ComplementaryFilter::eulerRates(const Vec3& g) const {
+  const float r = rollDeg_ * kDegToRad;
+  const float p = fmaxf(-85.0f, fminf(85.0f, pitchDeg_)) * kDegToRad;
+  const float crossRate = sinf(r)*g.y + cosf(r)*g.z;
+  return makeVec3(g.x + crossRate*tanf(p), cosf(r)*g.y - sinf(r)*g.z,
+                  -crossRate/cosf(p));
+}
+
+bool ComplementaryFilter::updateEnhanced(const Vec3& a, const Vec3& g,
+                                         float dt, float armX, float armZ,
+                                         float accelRejectG) {
+  if (!vecFinite(a) || !vecFinite(g) || !isfinite(dt) || !(dt > 0) ||
+      !isfinite(armX) || !isfinite(armZ) ||
+      !isfinite(accelRejectG) || !(accelRejectG > 0)) return false;
+  const Vec3 w = makeVec3(g.x*kDegToRad, g.y*kDegToRad, g.z*kDegToRad);
+  if (!haveOmega_ || dt > kMaxDtS) {
+    omegaDot_ = makeVec3(0, 0, 0);
+  } else {
+    const float gain = dt / (0.020f + dt);
+    omegaDot_.x += gain*((w.x - omega_.x)/dt - omegaDot_.x);
+    omegaDot_.y += gain*((w.y - omega_.y)/dt - omegaDot_.y);
+    omegaDot_.z += gain*((w.z - omega_.z)/dt - omegaDot_.z);
+  }
+  omega_ = w;
+  haveOmega_ = true;
+  const Vec3 r = makeVec3(armX, 0, armZ);
+  const Vec3 tangential = cross(omegaDot_, r);
+  const Vec3 centripetal = cross(w, cross(w, r));
+  const Vec3 rot = makeVec3((tangential.x + centripetal.x)/9.80665f,
+                            (tangential.y + centripetal.y)/9.80665f,
+                            (tangential.z + centripetal.z)/9.80665f);
+  const Vec3 grav = vecSub(a, rot);
+  rotationalG_ = vecNorm(rot);
+  const float dev = fabsf(vecNorm(grav) - 1.0f);
+  accelTrust_ = fmaxf(0.0f, fminf(1.0f, 2.0f*(1.0f - dev/accelRejectG)));
+  if (!initialized_ || dt > kMaxDtS) {
+    if (accelTrust_ > 0) seed(grav);
+  } else {
+    const Vec3 rates = eulerRates(g);
+    float roll = rollDeg_ + rates.x*dt;
+    float pitch = pitchDeg_ + rates.y*dt;
+    const float gain = accelTrust_ * dt/(tauS_ + dt);
+    if (gain > 0) {
+      roll += gain*wrapDeg(accelRollDeg(grav) - roll);
+      pitch += gain*(accelPitchDeg(grav) - pitch);
+    }
+    rollDeg_ = wrapDeg(roll);
+    pitchDeg_ = pitch;
+  }
+  lastUsedAccel_ = accelTrust_ > 0;
+  const float roll = rollDeg_*kDegToRad, pitch = pitchDeg_*kDegToRad;
+  const Vec3 gravity = makeVec3(-sinf(pitch), sinf(roll)*cosf(pitch),
+                                cosf(roll)*cosf(pitch));
+  linearG_ = vecNorm(vecSub(grav, gravity));
+  return true;
+}
+
+FusionParams defaultFusionParams() {
+  FusionParams p = {0, 0.10f, -0.05f, 0.15f};
+  return p;
+}
+
+void sanitizeFusionParams(FusionParams* p) {
+  if (p->mode > 1) p->mode = 1;
+  p->armX = isfinite(p->armX) ? fmaxf(-0.30f, fminf(0.30f, p->armX)) : 0.10f;
+  p->armZ = isfinite(p->armZ) ? fmaxf(-0.30f, fminf(0.30f, p->armZ)) : -0.05f;
+  p->accelRejectG = isfinite(p->accelRejectG)
+      ? fmaxf(0.02f, fminf(1.0f, p->accelRejectG)) : 0.15f;
 }

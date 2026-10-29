@@ -62,7 +62,7 @@ class BridgeProfile:
         if lines[-1] == "":
             lines.pop()  # a final line terminator is optional
         for line in lines:
-            if (not line.startswith(("set ", "chan ", "mount ", "fgate ", "hid "))
+            if (not line.startswith(("set ", "chan ", "mount ", "fgate ", "hid ", "fcal "))
                     or not line.partition(" ")[2].strip()
                     or any(ord(c) < 32 or c in "\x7f\x85\u2028\u2029" for c in line)):
                 raise ValueError("invalid profile command")

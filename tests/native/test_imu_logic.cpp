@@ -549,6 +549,8 @@ void test_monotonic_clock() {
 void run_game_input_tests();  // test_game_input.cpp
 void run_channel_tests();     // test_channels.cpp
 
+void run_v080_tests();        // test_v080.cpp
+
 int main() {
   test_parse_axis();
   test_mount_frame();
@@ -576,6 +578,7 @@ int main() {
   test_monotonic_clock();
   run_game_input_tests();
   run_channel_tests();
+  run_v080_tests();
   std::printf("all IMU, game input and channel logic tests passed\n");
   return 0;
 }

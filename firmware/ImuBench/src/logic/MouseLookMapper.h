@@ -20,6 +20,9 @@
 #include <stdint.h>
 
 struct MouseLookParams {
+  uint8_t lmode;         // D38: 0 tilt, 1 gyro, 2 hybrid
+  float kgx, kgy;        // counts per degree of rotation
+  float gyroDeadDps;
   float kxCpsPerDeg;
   float kyCpsPerDeg;
   float deadbandDeg[2];  // horizontal, vertical
@@ -76,7 +79,9 @@ class MouseLookMapper {
   void reset();
 
   // Source selection happens in LookController; inversion happens here.
-  LookVelocity update(float xErrDeg, float yErrDeg, float dtS = 0.01f);
+  LookVelocity update(float xErrDeg, float yErrDeg, float dtS = 0.01f,
+                      float xRateDps = 0, float yRateDps = 0,
+                      float xFineScale = 1, float yFineScale = 1);
 
  private:
   MouseLookParams params_;
