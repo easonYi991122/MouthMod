@@ -74,6 +74,7 @@ input[type=number], input[type=text] { width: 100%; font: inherit; padding: 2px 
 
   <div class="row" style="margin:6px 0">
     <button data-cmd="arm">启用</button>
+    <button id="recenter" title="停用后立即重新校准：回到正前方，静止 3 秒。重新测陀螺零偏和中立位，精细校准的转轴沿用">回中</button>
     <button class="stop" data-cmd="x">停用 (Esc)</button>
     <button data-cmd="ack">确认故障</button>
   </div>
@@ -500,6 +501,13 @@ function connect() {
   es.onerror = () => { $('link').textContent = '桥断开，重连中…'; };
 }
 panel.querySelectorAll('button[data-cmd]').forEach((b) => { b.onclick = () => cmd(b.dataset.cmd); });
+// Drift fix with existing commands: disarm, then arm = a fresh 3 s calibration
+// (gyro bias and neutral re-measured; fine-calibration axes are kept, D40).
+$('recenter').onclick = async () => {
+  const state = D && D[3];
+  if (state && state !== 'DISARMED' && state !== 'FAULT' && !await cmd('x')) return;
+  if (await cmd('arm')) log('回中：请回到正前方，静止 3 秒');
+};
 $('chkHid').onchange = () => cmd('hid ' + ($('chkHid').checked ? 1 : 0));
 $('chkGate').onchange = () => cmd('fgate ' + ($('chkGate').checked ? 1 : 0));
 $('cmdForm').onsubmit = (e) => { e.preventDefault(); const v = $('cmdIn').value.trim(); if (v) cmd(v); $('cmdIn').value = ''; };
